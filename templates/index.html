@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - ONVIF Viewer{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-4">
+            <i class="bi bi-speedometer2"></i> Dashboard
+        </h2>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Camera Stats -->
+    <div class="col-md-3 mb-4">
+        <div class="card text-white bg-primary">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title">Total Cameras</h6>
+                        <h2 class="mb-0" id="totalCameras">0</h2>
+                    </div>
+                    <i class="bi bi-camera fs-1"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Online Cameras -->
+    <div class="col-md-3 mb-4">
+        <div class="card text-white bg-success">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title">Online</h6>
+                        <h2 class="mb-0" id="onlineCameras">0</h2>
+                    </div>
+                    <i class="bi bi-check-circle fs-1"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active Recordings -->
+    <div class="col-md-3 mb-4">
+        <div class="card text-white bg-danger">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title">Recording</h6>
+                        <h2 class="mb-0" id="activeRecordings">0</h2>
+                    </div>
+                    <i class="bi bi-record-circle fs-1"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Events -->
+    <div class="col-md-3 mb-4">
+        <div class="card text-white bg-warning">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title">Events (24h)</h6>
+                        <h2 class="mb-0" id="recentEvents">0</h2>
+                    </div>
+                    <i class="bi bi-bell fs-1"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Camera Grid -->
+<div class="row">
+    <div class="col-12 mb-3">
+        <h4>Camera Views</h4>
+    </div>
+    <div id="cameraGrid" class="row">
+        <!-- Camera previews will be loaded here -->
+    </div>
+</div>
+
+<!-- Recent Events -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Recent Events</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover" id="eventsTable">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Camera</th>
+                                <th>Event Type</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Events will be loaded here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    loadDashboard();
+    setInterval(loadDashboard, 30000); // Refresh every 30 seconds
+});
+
+function loadDashboard() {
+    // Load cameras
+    $.get('/api/cameras', function(cameras) {
+        $('#totalCameras').text(cameras.length);
+        
+        const onlineCount = cameras.filter(c => c.status === 'online').length;
+        $('#onlineCameras').text(onlineCount);
+        
+        // Load camera grid
+        const grid = $('#cameraGrid');
+        grid.empty();
+        
+        cameras.forEach(camera => {
+            const cameraCard = `
+                <div class="col-md-4 col-lg-3 mb-3">
+                    <div class="card">
+                        <div class="card-body">
+                            <h6 class="card-title">
+                                ${camera.name}
+                                <span class="badge ${camera.status === 'online' ? 'bg-success' : 'bg-secondary'} float-end">
+                                    ${camera.status}
+                                </span>
+                            </h6>
+                            <p class="card-text small text-muted">
+                                ${camera.manufacturer || 'Unknown'} ${camera.model || ''}
+                            </p>
+                            <a href="/viewer/${camera.id}" class="btn btn-sm btn-primary">
+                                <i class="bi bi-play-circle"></i> View
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            `;
+            grid.append(cameraCard);
+        });
+    });
+    
+    // Load recordings count
+    $.get('/api/recordings', function(recordings) {
+        const activeCount = recordings.filter(r => r.recording_status === 'active').length;
+        $('#activeRecordings').text(activeCount);
+    });
+    
+    // Load recent events
+    $.get('/api/events', function(events) {
+        $('#recentEvents').text(events.length);
+        
+        const tbody = $('#eventsTable tbody');
+        tbody.empty();
+        
+        events.slice(0, 10).forEach(event => {
+            const row = `
+                <tr>
+                    <td>${new Date(event.event_time).toLocaleString()}</td>
+                    <td>${event.camera_name || 'Unknown'}</td>
+                    <td><span class="badge bg-info">${event.event_type}</span></td>
+                    <td>${event.description || ''}</td>
+                </tr>
+            `;
+            tbody.append(row);
+        });
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+
+{% block title %}Grid View - ONVIF Viewer{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12 d-flex flex-column flex-lg-row justify-content-between align-items-lg-center mb-4 gap-3">
+        <h2 class="mb-0"><i class="bi bi-grid-3x3-gap"></i> Multi-Camera Grid</h2>
+        <div class="btn-group" role="group">
+            <button class="btn btn-outline-secondary" id="refreshGridBtn">
+                <i class="bi bi-arrow-clockwise"></i> Refresh Grid
+            </button>
+            <button class="btn btn-outline-danger" id="stopAllStreamsBtn">
+                <i class="bi bi-stop-circle"></i> Stop All Streams
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div id="gridContainer" class="camera-grid">
+            <!-- Camera cards will be injected here -->
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+const gridStreams = {};
+let isGridLoading = false;
+
+function setGridLoading(isLoading) {
+    const button = $('#refreshGridBtn');
+    if (isLoading) {
+        if (!button.data('original-text')) {
+            button.data('original-text', button.html());
+        }
+        button.prop('disabled', true).html(`
+            <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+            Refreshing...
+        `);
+    } else {
+        const original = button.data('original-text');
+        if (original) {
+            button.html(original);
+        }
+        button.prop('disabled', false);
+    }
+}
+
+function renderCameraCard(camera) {
+    const statusBadgeClass = camera.status === 'online' ? 'bg-success' : 'bg-secondary';
+    const card = $(`
+        <div class="card h-100 shadow-sm grid-card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-camera-video"></i> ${camera.name}</span>
+                <span class="badge ${statusBadgeClass}">${camera.status || 'unknown'}</span>
+            </div>
+            <div class="card-body">
+                <div class="ratio ratio-16x9 bg-dark position-relative mb-2 overflow-hidden">
+                    <video id="gridVideo-${camera.camera_id}" class="w-100" autoplay muted playsinline></video>
+                    <div class="grid-loading position-absolute top-50 start-50 translate-middle text-center text-white" id="loader-${camera.camera_id}">
+                        <div class="spinner-border spinner-border-sm" role="status"></div>
+                        <div class="mt-2 small">Starting...</div>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                    <small class="text-muted">${camera.host}:${camera.port}</small>
+                    <small id="card-status-${camera.camera_id}" class="text-muted">Pending</small>
+                </div>
+            </div>
+        </div>
+    `);
+    return card;
+}
+
+function attachHlsToVideo(cameraId, playlistUrl) {
+    const videoElement = document.getElementById(`gridVideo-${cameraId}`);
+    const loader = $(`#loader-${cameraId}`);
+    const status = $(`#card-status-${cameraId}`);
+
+    if (!videoElement) {
+        return;
+    }
+
+    videoElement.muted = true;
+    videoElement.autoplay = true;
+    videoElement.playsInline = true;
+
+    const onPlaybackStarted = () => {
+        loader.hide();
+        status.text('Playing');
+    };
+
+    if (gridStreams[cameraId] && gridStreams[cameraId].hls) {
+        gridStreams[cameraId].hls.destroy();
+    }
+
+    if (Hls.isSupported()) {
+        const hlsInstance = new Hls({
+            debug: false,
+            enableWorker: true,
+            lowLatencyMode: true
+        });
+
+        hlsInstance.loadSource(playlistUrl);
+        hlsInstance.attachMedia(videoElement);
+
+        hlsInstance.on(Hls.Events.MANIFEST_PARSED, function() {
+            videoElement.play().then(onPlaybackStarted).catch(error => {
+                console.error('Grid playback error', error);
+                status.text('Playback error');
+                loader.hide();
+            });
+        });
+
+        hlsInstance.on(Hls.Events.ERROR, function(event, data) {
+            console.error('Grid HLS error', data);
+            if (data.fatal) {
+                switch (data.type) {
+                    case Hls.ErrorTypes.NETWORK_ERROR:
+                        hlsInstance.startLoad();
+                        break;
+                    case Hls.ErrorTypes.MEDIA_ERROR:
+                        hlsInstance.recoverMediaError();
+                        break;
+                    default:
+                        status.text('Playback error');
+                        loader.hide();
+                        hlsInstance.destroy();
+                }
+            }
+        });
+
+        gridStreams[cameraId] = {
+            streamId: gridStreams[cameraId]?.streamId || null,
+            hls: hlsInstance
+        };
+    } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+        videoElement.src = playlistUrl;
+        videoElement.addEventListener('loadedmetadata', function handleLoaded() {
+            videoElement.removeEventListener('loadedmetadata', handleLoaded);
+            videoElement.play().then(onPlaybackStarted);
+        });
+
+        gridStreams[cameraId] = {
+            streamId: gridStreams[cameraId]?.streamId || null,
+            hls: null
+        };
+    } else {
+        loader.hide();
+        status.text('HLS not supported');
+    }
+}
+
+function startGridStream(camera) {
+    const loader = $(`#loader-${camera.camera_id}`);
+    const status = $(`#card-status-${camera.camera_id}`);
+
+    loader.show();
+    status.text('Starting...');
+
+    const request = $.ajax({
+        url: '/api/streams/start',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+            camera_id: camera.camera_id,
+            profile_token: camera.stream.profile_token
+        })
+    });
+
+    request.done(function(response) {
+        gridStreams[camera.camera_id] = gridStreams[camera.camera_id] || {};
+        gridStreams[camera.camera_id].streamId = response.stream_id;
+
+        status.text(response.already_running ? 'Connecting...' : 'Buffering...');
+        const delay = response.already_running ? 500 : 2000;
+        setTimeout(() => {
+            attachHlsToVideo(camera.camera_id, response.playlist_url);
+        }, delay);
+    }).fail(function(xhr) {
+        const error = xhr.responseJSON?.error || 'Failed to start stream';
+        status.text(error);
+        loader.hide();
+    });
+
+    return request;
+}
+
+function stopGridStream(cameraId) {
+    const entry = gridStreams[cameraId];
+    if (!entry) {
+        return $.Deferred().resolve().promise();
+    }
+
+    if (entry.hls) {
+        entry.hls.destroy();
+    }
+
+    const request = entry.streamId ? $.ajax({
+        url: '/api/streams/stop',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+            stream_id: entry.streamId
+        })
+    }).fail(function(xhr) {
+        console.error('Failed to stop grid stream', xhr.responseJSON || xhr.statusText);
+    }) : $.Deferred().resolve().promise();
+
+    delete gridStreams[cameraId];
+    $(`#card-status-${cameraId}`).text('Stopped');
+    $(`#loader-${cameraId}`).hide();
+
+    return request;
+}
+
+function stopAllGridStreams() {
+    const cameraIds = Object.keys(gridStreams);
+    if (cameraIds.length === 0) {
+        return $.Deferred().resolve().promise();
+    }
+
+    const requests = cameraIds.map(id => stopGridStream(id));
+    return $.when.apply($, requests);
+}
+
+function loadGrid() {
+    if (isGridLoading) {
+        return;
+    }
+    isGridLoading = true;
+    setGridLoading(true);
+
+    stopAllGridStreams().always(function() {
+        const container = $('#gridContainer');
+        container.empty();
+
+        $.get('/api/streams/overview', function(cameras) {
+            if (!cameras || cameras.length === 0) {
+                container.html('<p class="text-muted">No cameras available.</p>');
+                return;
+            }
+
+            cameras.forEach(camera => {
+                const card = renderCameraCard(camera);
+                container.append(card);
+
+                if (!camera.stream || !camera.stream.profile_token) {
+                    $(`#loader-${camera.camera_id}`).hide();
+                    $(`#card-status-${camera.camera_id}`).text('No stream available');
+                    const wrapper = $(`#gridVideo-${camera.camera_id}`).parent();
+                    wrapper.addClass('bg-light d-flex justify-content-center align-items-center');
+                    wrapper.find('video').remove();
+                    wrapper.append('<span class="text-muted">Stream not configured</span>');
+                    return;
+                }
+
+                startGridStream(camera);
+            });
+        }).fail(function(xhr) {
+            const error = xhr.responseJSON?.error || 'Unable to load camera overview.';
+            $('#gridContainer').html(`<div class="alert alert-danger">${error}</div>`);
+        }).always(function() {
+            isGridLoading = false;
+            setGridLoading(false);
+        });
+    });
+}
+
+$(document).ready(function() {
+    loadGrid();
+
+    $('#refreshGridBtn').on('click', function() {
+        loadGrid();
+    });
+
+    $('#stopAllStreamsBtn').on('click', function() {
+        stopAllGridStreams();
+    });
+
+    $(window).on('beforeunload', function() {
+        stopAllGridStreams();
+    });
+});
+</script>
+{% endblock %}

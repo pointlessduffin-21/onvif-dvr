@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+
+{% block title %}Events & Analytics - ONVIF Viewer{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12 mb-4">
+        <h2><i class="bi bi-bell"></i> Events & Analytics (Profile M)</h2>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Analytics Configurations -->
+    <div class="col-lg-4 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Analytics Modules</h5>
+            </div>
+            <div class="card-body">
+                <div id="analyticsList">
+                    <!-- Analytics will be loaded here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Event Statistics -->
+    <div class="col-lg-8 mb-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Event Statistics (Last 24 Hours)</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3">
+                        <div class="text-center">
+                            <h3 class="text-primary" id="totalEvents">0</h3>
+                            <small class="text-muted">Total Events</small>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="text-center">
+                            <h3 class="text-warning" id="motionEvents">0</h3>
+                            <small class="text-muted">Motion</small>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="text-center">
+                            <h3 class="text-danger" id="alertEvents">0</h3>
+                            <small class="text-muted">Alerts</small>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="text-center">
+                            <h3 class="text-info" id="analyticsEvents">0</h3>
+                            <small class="text-muted">Analytics</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h5 class="mb-0">Event Log</h5>
+                    </div>
+                    <div class="col-md-6 text-end">
+                        <div class="btn-group">
+                            <button class="btn btn-sm btn-outline-secondary active" onclick="filterEvents('all')">All</button>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="filterEvents('motion')">Motion</button>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="filterEvents('alert')">Alerts</button>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="filterEvents('analytics')">Analytics</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover" id="eventsTable">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Camera</th>
+                                <th>Event Type</th>
+                                <th>Topic</th>
+                                <th>Source</th>
+                                <th>Description</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Events will be loaded here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let currentEventFilter = 'all';
+let allEvents = [];
+
+$(document).ready(function() {
+    loadAnalytics();
+    loadEvents();
+    setInterval(loadEvents, 5000); // Refresh every 5 seconds
+});
+
+function loadAnalytics() {
+    $.get('/api/cameras', function(cameras) {
+        const analyticsContainer = $('#analyticsList');
+        analyticsContainer.empty();
+        
+        if (cameras.length === 0) {
+            analyticsContainer.html('<p class="text-muted mb-0">No cameras configured</p>');
+            return;
+        }
+        
+        cameras.forEach(camera => {
+            $.get(`/api/cameras/${camera.id}/analytics`, function(analytics) {
+                if (analytics.length > 0) {
+                    analytics.forEach(config => {
+                        const statusClass = config.is_active ? 'success' : 'secondary';
+                        const item = `
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <strong>${config.config_name || config.analytics_module}</strong>
+                                    <span class="badge bg-${statusClass}">
+                                        ${config.is_active ? 'Active' : 'Inactive'}
+                                    </span>
+                                </div>
+                                <small class="text-muted">${camera.name}</small>
+                            </div>
+                        `;
+                        analyticsContainer.append(item);
+                    });
+                }
+            });
+        });
+    });
+}
+
+function loadEvents() {
+    $.get('/api/events', function(events) {
+        allEvents = events;
+        updateEventStatistics(events);
+        displayEvents(events);
+    });
+}
+
+function updateEventStatistics(events) {
+    const now = new Date();
+    const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    
+    const recentEvents = events.filter(e => new Date(e.event_time) > oneDayAgo);
+    
+    $('#totalEvents').text(recentEvents.length);
+    
+    const motionCount = recentEvents.filter(e => 
+        e.event_type && e.event_type.toLowerCase().includes('motion')
+    ).length;
+    $('#motionEvents').text(motionCount);
+    
+    const alertCount = recentEvents.filter(e => 
+        e.event_type && e.event_type.toLowerCase().includes('alert')
+    ).length;
+    $('#alertEvents').text(alertCount);
+    
+    const analyticsCount = recentEvents.filter(e => 
+        e.event_type && (e.event_type.toLowerCase().includes('analytics') || 
+                        e.event_type.toLowerCase().includes('detection'))
+    ).length;
+    $('#analyticsEvents').text(analyticsCount);
+}
+
+function displayEvents(events) {
+    const filtered = currentEventFilter === 'all' ? events : 
+                    events.filter(e => {
+                        const type = (e.event_type || '').toLowerCase();
+                        switch(currentEventFilter) {
+                            case 'motion': return type.includes('motion');
+                            case 'alert': return type.includes('alert');
+                            case 'analytics': return type.includes('analytics') || type.includes('detection');
+                            default: return true;
+                        }
+                    });
+    
+    const tbody = $('#eventsTable tbody');
+    tbody.empty();
+    
+    if (filtered.length === 0) {
+        tbody.html('<tr><td colspan="6" class="text-center text-muted">No events found</td></tr>');
+        return;
+    }
+    
+    filtered.slice(0, 50).forEach(event => {
+        const time = event.event_time ? new Date(event.event_time).toLocaleString() : 'N/A';
+        const type = event.event_type || 'N/A';
+        const typeClass = type.toLowerCase().includes('alert') ? 'danger' : 
+                         type.toLowerCase().includes('motion') ? 'warning' : 'info';
+        
+        const row = `
+            <tr>
+                <td>${time}</td>
+                <td>${event.camera_name || 'Unknown'}</td>
+                <td><span class="badge bg-${typeClass}">${type}</span></td>
+                <td><small class="text-muted">${event.event_topic || 'N/A'}</small></td>
+                <td><small>${event.source || 'N/A'}</small></td>
+                <td>${event.description || ''}</td>
+            </tr>
+        `;
+        tbody.append(row);
+    });
+}
+
+function filterEvents(filter) {
+    currentEventFilter = filter;
+    displayEvents(allEvents);
+    
+    // Update button styles
+    $('.btn-group button').removeClass('active');
+    $(event.target).addClass('active');
+}
+</script>
+{% endblock %}

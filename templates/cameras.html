@@ -1,0 +1,343 @@
+{% extends "base.html" %}
+
+{% block title %}Cameras - ONVIF Viewer{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12 d-flex flex-column flex-lg-row justify-content-between align-items-lg-center mb-4 gap-3">
+        <h2 class="mb-0"><i class="bi bi-camera"></i> Camera Management</h2>
+        <div class="btn-group" role="group">
+            <button class="btn btn-outline-secondary" id="refreshCamerasBtn">
+                <i class="bi bi-arrow-clockwise"></i> Rescan Cameras
+            </button>
+            <a class="btn btn-outline-info" href="/grid">
+                <i class="bi bi-grid-3x3-gap"></i> Grid View
+            </a>
+            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addCameraModal">
+                <i class="bi bi-plus-circle"></i> Add Camera
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover" id="camerasTable">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Host</th>
+                                <th>Manufacturer</th>
+                                <th>Model</th>
+                                <th>Status</th>
+                                <th>Profiles</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Cameras will be loaded here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Add Camera Modal -->
+<div class="modal fade" id="addCameraModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Add ONVIF Camera</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="addCameraForm">
+                    <div class="mb-3">
+                        <label for="cameraName" class="form-label">Camera Name</label>
+                        <input type="text" class="form-control" id="cameraName" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="cameraHost" class="form-label">IP Address / Host</label>
+                        <input type="text" class="form-control" id="cameraHost" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="cameraPort" class="form-label">Port</label>
+                        <input type="number" class="form-control" id="cameraPort" value="80" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="cameraUsername" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="cameraUsername" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="cameraPassword" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="cameraPassword" required>
+                    </div>
+                    <div class="alert alert-info">
+                        <small>
+                            <strong>Supported Profiles:</strong> S (Streaming), G (Recording), 
+                            C (Physical Access), A (Access Control), T (Advanced Streaming), 
+                            M (Metadata/Events), D (Peripherals)
+                        </small>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="addCamera()">
+                    <i class="bi bi-plus-circle"></i> Add Camera
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Camera Modal -->
+<div class="modal fade" id="editCameraModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Camera</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="editCameraForm">
+                    <input type="hidden" id="editCameraId">
+                    <div class="mb-3">
+                        <label for="editCameraName" class="form-label">Camera Name</label>
+                        <input type="text" class="form-control" id="editCameraName" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editCameraHost" class="form-label">IP Address / Host</label>
+                        <input type="text" class="form-control" id="editCameraHost" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editCameraPort" class="form-label">Port</label>
+                        <input type="number" class="form-control" id="editCameraPort" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editCameraUsername" class="form-label">Username</label>
+                        <input type="text" class="form-control" id="editCameraUsername" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editCameraPassword" class="form-label">Password</label>
+                        <input type="password" class="form-control" id="editCameraPassword" required>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="updateCamera()">
+                    <i class="bi bi-save"></i> Save Changes
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+$(document).ready(function() {
+    loadCameras();
+    
+    $('#refreshCamerasBtn').on('click', function() {
+        refreshCameras();
+    });
+
+    // Fix modal backdrop z-index issues
+    $('#addCameraModal, #editCameraModal').on('show.bs.modal', function() {
+        // Ensure modal and backdrop have correct z-index
+        setTimeout(() => {
+            $(this).css('z-index', 1060);
+            $('.modal-backdrop').css('z-index', 1055);
+        }, 0);
+    });
+    
+    // Clean up any orphaned backdrops on modal hide
+    $('#addCameraModal, #editCameraModal').on('hidden.bs.modal', function() {
+        $('body').removeClass('modal-open');
+        $('.modal-backdrop').remove();
+    });
+});
+
+function loadCameras() {
+    $.get('/api/cameras', function(cameras) {
+        const tbody = $('#camerasTable tbody');
+        tbody.empty();
+        
+        cameras.forEach(camera => {
+            const profiles = camera.profiles_supported ? JSON.parse(camera.profiles_supported) : [];
+            const profileBadges = profiles.slice(0, 3).map(p => 
+                `<span class="badge bg-secondary me-1">${p.name}</span>`
+            ).join('');
+            
+            const row = `
+                <tr class="camera-row" data-camera-id="${camera.id}">
+                    <td>${camera.name}</td>
+                    <td>${camera.host}:${camera.port}</td>
+                    <td>${camera.manufacturer || 'N/A'}</td>
+                    <td>${camera.model || 'N/A'}</td>
+                    <td>
+                        <span class="badge ${camera.status === 'online' ? 'bg-success' : 'bg-secondary'}">
+                            ${camera.status}
+                        </span>
+                    </td>
+                    <td>${profileBadges}${profiles.length > 3 ? '...' : ''}</td>
+                    <td>
+                        <a href="/viewer/${camera.id}" class="btn btn-sm btn-primary action-btn" title="View">
+                            <i class="bi bi-play-circle"></i>
+                        </a>
+                        <button class="btn btn-sm btn-warning action-btn" onclick="editCamera(${camera.id})" title="Edit">
+                            <i class="bi bi-pencil"></i>
+                        </button>
+                        <button class="btn btn-sm btn-danger action-btn" onclick="deleteCamera(${camera.id})" title="Delete">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </td>
+                </tr>
+            `;
+            tbody.append(row);
+        });
+
+        $('#camerasTable tbody').off('click', 'tr.camera-row').on('click', 'tr.camera-row', function(event) {
+            if ($(event.target).closest('.action-btn').length) {
+                return;
+            }
+            const cameraId = $(this).data('camera-id');
+            window.location.href = `/viewer/${cameraId}`;
+        });
+    });
+}
+
+function setRefreshButtonState(isLoading) {
+    const button = $('#refreshCamerasBtn');
+    if (isLoading) {
+        if (!button.data('original-text')) {
+            button.data('original-text', button.html());
+        }
+        button.prop('disabled', true).html(`
+            <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+            Rescanning...
+        `);
+    } else {
+        const original = button.data('original-text');
+        if (original) {
+            button.html(original);
+        }
+        button.prop('disabled', false);
+    }
+}
+
+function refreshCameras() {
+    setRefreshButtonState(true);
+    $.ajax({
+        url: '/api/cameras/refresh',
+        method: 'POST',
+        success: function(response) {
+            const refreshedCount = response.refreshed ? response.refreshed.length : 0;
+            const errorCount = response.errors ? response.errors.length : 0;
+            let message = `Refreshed ${refreshedCount} camera${refreshedCount === 1 ? '' : 's'}.`;
+            if (errorCount > 0) {
+                message += ` ${errorCount} camera${errorCount === 1 ? ' has' : 's have'} errors.`;
+            }
+            alert(message);
+            loadCameras();
+        },
+        error: function(xhr) {
+            const response = xhr.responseJSON;
+            const error = response && response.errors ? JSON.stringify(response.errors) : 'Unable to refresh cameras.';
+            alert(error);
+        },
+        complete: function() {
+            setRefreshButtonState(false);
+        }
+    });
+}
+
+function addCamera() {
+    const data = {
+        name: $('#cameraName').val(),
+        host: $('#cameraHost').val(),
+        port: parseInt($('#cameraPort').val()),
+        username: $('#cameraUsername').val(),
+        password: $('#cameraPassword').val()
+    };
+    
+    $.ajax({
+        url: '/api/cameras',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(data),
+        success: function(response) {
+            $('#addCameraModal').modal('hide');
+            $('#addCameraForm')[0].reset();
+            loadCameras();
+            alert('Camera added successfully!');
+        },
+        error: function(xhr) {
+            const error = xhr.responseJSON ? xhr.responseJSON.error : 'Failed to add camera';
+            alert('Error: ' + error);
+        }
+    });
+}
+
+function editCamera(id) {
+    $.get(`/api/cameras/${id}`, function(camera) {
+        $('#editCameraId').val(camera.id);
+        $('#editCameraName').val(camera.name);
+        $('#editCameraHost').val(camera.host);
+        $('#editCameraPort').val(camera.port);
+        $('#editCameraUsername').val(camera.username);
+        $('#editCameraPassword').val(camera.password);
+        $('#editCameraModal').modal('show');
+    });
+}
+
+function updateCamera() {
+    const id = $('#editCameraId').val();
+    const data = {
+        name: $('#editCameraName').val(),
+        host: $('#editCameraHost').val(),
+        port: parseInt($('#editCameraPort').val()),
+        username: $('#editCameraUsername').val(),
+        password: $('#editCameraPassword').val()
+    };
+    
+    $.ajax({
+        url: `/api/cameras/${id}`,
+        method: 'PUT',
+        contentType: 'application/json',
+        data: JSON.stringify(data),
+        success: function() {
+            $('#editCameraModal').modal('hide');
+            loadCameras();
+            alert('Camera updated successfully!');
+        },
+        error: function() {
+            alert('Failed to update camera');
+        }
+    });
+}
+
+function deleteCamera(id) {
+    if (confirm('Are you sure you want to delete this camera?')) {
+        $.ajax({
+            url: `/api/cameras/${id}`,
+            method: 'DELETE',
+            success: function() {
+                loadCameras();
+                alert('Camera deleted successfully!');
+            },
+            error: function() {
+                alert('Failed to delete camera');
+            }
+        });
+    }
+}
+</script>
+{% endblock %}
