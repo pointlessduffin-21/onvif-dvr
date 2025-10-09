@@ -2,6 +2,14 @@ import sqlite3
 import os
 from datetime import datetime
 
+
+def ensure_column(cursor, table, column, definition):
+    """Ensure a column exists on the given table, adding it if missing"""
+    cursor.execute(f"PRAGMA table_info({table})")
+    columns = [row[1] for row in cursor.fetchall()]
+    if column not in columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
 def get_db_connection():
     """Get database connection"""
     db_path = os.getenv('DATABASE_PATH', 'onvif_viewer.db')
@@ -66,11 +74,19 @@ def init_db():
             framerate INTEGER,
             bitrate INTEGER,
             codec TEXT,
+            channel_number INTEGER,
+            stream_variant TEXT,
+            stream_label TEXT,
             is_active BOOLEAN DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (camera_id) REFERENCES cameras (id) ON DELETE CASCADE
         )
     ''')
+
+    # Ensure newer columns exist when upgrading existing installations
+    ensure_column(cursor, 'video_streams', 'channel_number', 'INTEGER')
+    ensure_column(cursor, 'video_streams', 'stream_variant', 'TEXT')
+    ensure_column(cursor, 'video_streams', 'stream_label', 'TEXT')
     
     # Recordings table (Profile G)
     cursor.execute('''
@@ -193,6 +209,6 @@ def init_db():
     print("Database initialized successfully!")
 
 if __name__ == '__main__':
-    from dotenv import load_dotenv
+    from dotenv import load_dotenv  # type: ignore
     load_dotenv()
     init_db()

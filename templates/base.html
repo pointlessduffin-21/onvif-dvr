@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}ONVIF Viewer{% endblock %}</title>
+    <title>{% block title %}ONVIF DVR Viewer{% endblock %}</title>
     
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -19,7 +19,7 @@
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container-fluid">
             <a class="navbar-brand" href="/">
-                <i class="bi bi-camera-video"></i> ONVIF Viewer
+                <i class="bi bi-hdd-network"></i> ONVIF DVR Viewer
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
@@ -33,12 +33,12 @@
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/cameras">
-                            <i class="bi bi-camera"></i> Cameras
+                            <i class="bi bi-hdd"></i> DVRs
                         </a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="/grid">
-                            <i class="bi bi-grid-3x3-gap"></i> Grid View
+                            <i class="bi bi-grid-3x3-gap"></i> Stream Grid
                         </a>
                     </li>
                     <li class="nav-item">
@@ -69,7 +69,7 @@
     <!-- Footer -->
     <footer class="footer mt-5 py-3 bg-light">
         <div class="container text-center">
-            <span class="text-muted">ONVIF Viewer - Supporting Profiles S, G, C, A, T, M, D</span>
+            <span class="text-muted">ONVIF DVR Viewer - Supporting Profiles S, G, C, A, T, M, D</span>
         </div>
     </footer>
 

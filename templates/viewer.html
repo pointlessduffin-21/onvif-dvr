@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}Video Viewer - ONVIF Viewer{% endblock %}
+{% block title %}Video Viewer - ONVIF DVR Viewer{% endblock %}
 
 {% block content %}
 <div class="row">
     <div class="col-12 mb-3">
         <a href="/cameras" class="btn btn-secondary">
-            <i class="bi bi-arrow-left"></i> Back to Cameras
+            <i class="bi bi-arrow-left"></i> Back to DVRs
         </a>
     </div>
 </div>
@@ -16,7 +16,7 @@
         <!-- Video Player -->
         <div class="card mb-3">
             <div class="card-header">
-                <h5 class="mb-0" id="cameraTitle">Camera View</h5>
+                <h5 class="mb-0" id="cameraTitle">DVR Stream</h5>
             </div>
             <div class="card-body">
                 <div class="ratio ratio-16x9 bg-dark position-relative">
@@ -116,13 +116,13 @@
     </div>
 
     <div class="col-lg-3">
-        <!-- Camera Info -->
+    <!-- DVR Info -->
         <div class="card mb-3">
             <div class="card-header">
-                <h6 class="mb-0">Camera Information</h6>
+                <h6 class="mb-0">DVR Information</h6>
             </div>
             <div class="card-body" id="cameraInfo">
-                <!-- Camera info will be loaded here -->
+                <!-- DVR info will be loaded here -->
             </div>
         </div>
 
@@ -162,6 +162,7 @@ const cameraId = {{ camera_id }};
 let currentStream = null;
 let currentStreamId = null;
 let currentProfileToken = null;
+let currentStreamLabel = null;
 let isRecording = false;
 let hls = null;
 
@@ -174,7 +175,7 @@ $(document).ready(function() {
 
 function loadCameraInfo() {
     $.get(`/api/cameras/${cameraId}`, function(camera) {
-        $('#cameraTitle').text(camera.name);
+    $('#cameraTitle').text(`${camera.name} DVR`);
         
         const info = `
             <table class="table table-sm">
@@ -213,12 +214,14 @@ function loadStreams() {
                 details.push(`${stream.framerate}fps`);
             }
             const metaText = details.join(' @ ');
+            const streamLabel = stream.stream_label || `Channel ${stream.channel_number || index + 1}`;
             const item = `
                 <a href="#" class="list-group-item list-group-item-action ${index === 0 ? 'active' : ''}" 
                    data-uri="${stream.stream_uri}" 
-                   data-profile="${stream.profile_token}">
+                   data-profile="${stream.profile_token}"
+                   data-label="${streamLabel.replace(/"/g, '&quot;')}">
                     <div class="d-flex w-100 justify-content-between">
-                        <h6 class="mb-1">${stream.stream_type || 'Stream'}</h6>
+                        <h6 class="mb-1">${streamLabel}</h6>
                         <small>${stream.codec || ''}</small>
                     </div>
                     <small>${metaText}</small>
@@ -230,13 +233,15 @@ function loadStreams() {
         list.off('click', '.list-group-item').on('click', '.list-group-item', function(event) {
             event.preventDefault();
             const $item = $(this);
-            selectStream($item.data('uri'), $item.data('profile'), $item);
+            selectStream($item.data('uri'), $item.data('profile'), $item, {
+                label: $item.data('label')
+            });
         });
 
         // Auto-select and start first stream
         if (streams.length > 0) {
             const $first = list.find('.list-group-item').first();
-            selectStream($first.data('uri'), $first.data('profile'), $first, { autoStart: true, force: true });
+            selectStream($first.data('uri'), $first.data('profile'), $first, { autoStart: true, force: true, label: $first.data('label') });
         }
     });
 }
@@ -280,7 +285,7 @@ function loadPTZPresets() {
 }
 
 function selectStream(uri, profileToken, $element, options = {}) {
-    const settings = Object.assign({ autoStart: true, force: false }, options);
+    const settings = Object.assign({ autoStart: true, force: false, label: null }, options);
 
     if (!uri || !profileToken) {
         return;
@@ -289,11 +294,13 @@ function selectStream(uri, profileToken, $element, options = {}) {
     const proceed = () => {
         currentStream = uri;
         currentProfileToken = profileToken;
+        currentStreamLabel = settings.label || null;
         if ($element && $element.length) {
             $('#streamsList .list-group-item').removeClass('active');
             $element.addClass('active');
         }
-        updateStreamStatus('Preparing stream...');
+        const label = currentStreamLabel || 'Stream';
+        updateStreamStatus(`Preparing ${label}...`);
 
         if (settings.autoStart) {
             startStream();
@@ -321,9 +328,10 @@ function startStream() {
         return $.Deferred().reject().promise();
     }
 
+    const label = currentStreamLabel || 'stream';
     $('#loadingOverlay').show();
     $('#playBtn').prop('disabled', true);
-    updateStreamStatus('Starting stream...');
+    updateStreamStatus(`Starting ${label}...`);
 
     const request = $.ajax({
         url: '/api/streams/start',
@@ -342,9 +350,9 @@ function startStream() {
         console.log('Stream started:', response);
 
         if (response.already_running) {
-            updateStreamStatus('Connecting to existing stream...');
+            updateStreamStatus(`Connecting to existing ${label}...`);
         } else {
-            updateStreamStatus('Waiting for stream initialization...');
+            updateStreamStatus(`Waiting for ${label} to initialize...`);
         }
 
         const delay = response.already_running ? 500 : 2000;
@@ -358,7 +366,7 @@ function startStream() {
         $('#playBtn').prop('disabled', false);
         const error = xhr.responseJSON?.error || 'Unknown error';
         alert('Failed to start stream: ' + error);
-        updateStreamStatus('Error starting stream');
+        updateStreamStatus(`Error starting ${label}`);
     });
 
     return request;
@@ -429,7 +437,8 @@ function initHLSPlayer(playlistUrl) {
 function pauseStream() {
     const player = document.getElementById('videoPlayer');
     player.pause();
-    updateStreamStatus('Paused');
+    const label = currentStreamLabel || 'Stream';
+    updateStreamStatus(`${label} paused`);
 }
 
 function stopStream(preserveSelection = false) {
@@ -463,6 +472,7 @@ function stopStream(preserveSelection = false) {
             $('#streamsList .list-group-item').removeClass('active');
             currentStream = null;
             currentProfileToken = null;
+            currentStreamLabel = null;
             updateStreamStatus('Stream stopped');
         }
     });

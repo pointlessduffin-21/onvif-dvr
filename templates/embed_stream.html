@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ embed_config.stream_label }} - DVR Stream Embed</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: #111;
+            color: #f8f9fa;
+        }
+        .embed-wrapper {
+            max-width: 960px;
+            margin: 0 auto;
+        }
+        #embedLoader {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="embed-wrapper py-4 px-3 px-sm-4">
+        <div class="text-center mb-3">
+            <h5 class="mb-1">{{ embed_config.stream_label }}</h5>
+            <div class="small text-muted">{{ embed_config.camera_name }}</div>
+        </div>
+        <div class="ratio ratio-16x9 bg-black position-relative mb-2">
+            <video id="embedVideo" class="w-100 h-100 bg-black" controls autoplay muted playsinline>
+                Your browser does not support the video tag.
+            </video>
+            <div id="embedLoader" class="position-absolute top-50 start-50 translate-middle text-center text-white">
+                <div class="spinner-border" role="status"></div>
+                <div class="mt-2 small">Starting stream...</div>
+            </div>
+        </div>
+        <div class="d-flex justify-content-between align-items-center small text-muted">
+            <span id="embedStatus">Preparing stream...</span>
+            <span>Powered by ONVIF DVR Viewer</span>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script>
+    const embedConfig = {{ embed_config|tojson }};
+    const urlParams = new URLSearchParams(window.location.search);
+    const autoplayParam = urlParams.get('autoplay');
+    const mutedParam = urlParams.get('muted');
+    const controlsParam = urlParams.get('controls');
+    const loopParam = urlParams.get('loop');
+
+    const videoElement = document.getElementById('embedVideo');
+    const loaderElement = document.getElementById('embedLoader');
+    const statusElement = document.getElementById('embedStatus');
+
+    let currentStreamId = null;
+    let hlsInstance = null;
+
+    function applyVideoPreferences() {
+        const autoplay = autoplayParam === null ? true : autoplayParam !== '0';
+        const muted = mutedParam === null ? true : mutedParam !== '0';
+        const controls = controlsParam === null ? true : controlsParam !== '0';
+        const loop = loopParam === '1';
+
+        videoElement.autoplay = autoplay;
+        videoElement.muted = muted;
+        videoElement.controls = controls;
+        videoElement.loop = loop;
+
+        if (muted) {
+            videoElement.setAttribute('muted', 'muted');
+        } else {
+            videoElement.removeAttribute('muted');
+        }
+
+        if (controls) {
+            videoElement.setAttribute('controls', 'controls');
+        } else {
+            videoElement.removeAttribute('controls');
+        }
+
+        if (loop) {
+            videoElement.setAttribute('loop', 'loop');
+        } else {
+            videoElement.removeAttribute('loop');
+        }
+    }
+
+    async function startEmbedStream() {
+        loaderElement.style.display = 'block';
+        updateStatus('Starting DVR stream...');
+
+        try {
+            const response = await fetch('/api/streams/start', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    camera_id: embedConfig.camera_id,
+                    profile_token: embedConfig.profile_token
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to start stream (${response.status})`);
+            }
+
+            const data = await response.json();
+            currentStreamId = data.stream_id;
+            updateStatus(data.already_running ? 'Connecting to live stream...' : 'Buffering stream...');
+            attachHls(data.playlist_url);
+        } catch (error) {
+            console.error('Embed stream start error', error);
+            updateStatus('Unable to start stream');
+            loaderElement.style.display = 'none';
+        }
+    }
+
+    function attachHls(playlistUrl) {
+        if (!playlistUrl) {
+            updateStatus('Stream playlist missing');
+            loaderElement.style.display = 'none';
+            return;
+        }
+
+        if (hlsInstance) {
+            try {
+                hlsInstance.destroy();
+            } catch (error) {
+                console.warn('Failed to destroy previous HLS instance', error);
+            }
+            hlsInstance = null;
+        }
+
+        const onPlaying = () => {
+            loaderElement.style.display = 'none';
+            updateStatus('Playing');
+        };
+
+        if (Hls.isSupported()) {
+            hlsInstance = new Hls({
+                debug: false,
+                enableWorker: true,
+                lowLatencyMode: true
+            });
+            hlsInstance.loadSource(playlistUrl);
+            hlsInstance.attachMedia(videoElement);
+            hlsInstance.on(Hls.Events.MANIFEST_PARSED, function() {
+                videoElement.play().then(onPlaying).catch(error => {
+                    console.error('Embed playback error', error);
+                    updateStatus('Playback error');
+                    loaderElement.style.display = 'none';
+                });
+            });
+            hlsInstance.on(Hls.Events.ERROR, function(event, data) {
+                console.error('HLS error in embed view', data);
+                if (data.fatal) {
+                    switch (data.type) {
+                        case Hls.ErrorTypes.NETWORK_ERROR:
+                            hlsInstance.startLoad();
+                            break;
+                        case Hls.ErrorTypes.MEDIA_ERROR:
+                            hlsInstance.recoverMediaError();
+                            break;
+                        default:
+                            updateStatus('Fatal playback error');
+                            loaderElement.style.display = 'none';
+                            hlsInstance.destroy();
+                            hlsInstance = null;
+                    }
+                }
+            });
+        } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+            videoElement.src = playlistUrl;
+            videoElement.addEventListener('loadedmetadata', function handleLoaded() {
+                videoElement.removeEventListener('loadedmetadata', handleLoaded);
+                videoElement.play().then(onPlaying);
+            });
+        } else {
+            loaderElement.style.display = 'none';
+            updateStatus('HLS not supported in this browser');
+        }
+    }
+
+    async function stopEmbedStream() {
+        if (!currentStreamId) {
+            return;
+        }
+
+        const streamToStop = currentStreamId;
+        currentStreamId = null;
+
+        if (hlsInstance) {
+            try {
+                hlsInstance.destroy();
+            } catch (error) {
+                console.warn('Failed to destroy HLS instance on stop', error);
+            }
+            hlsInstance = null;
+        }
+
+        try {
+            await fetch('/api/streams/stop', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ stream_id: streamToStop })
+            });
+        } catch (error) {
+            console.warn('Failed to stop embed stream', error);
+        }
+    }
+
+    function updateStatus(message) {
+        statusElement.textContent = message;
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        applyVideoPreferences();
+        startEmbedStream();
+    });
+
+    window.addEventListener('beforeunload', () => {
+        stopEmbedStream();
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            videoElement.pause();
+        } else if (videoElement.autoplay) {
+            videoElement.play().catch(() => {
+                // Ignore playback promise rejection when autoplay is blocked
+            });
+        }
+    });
+    </script>
+</body>
+</html>

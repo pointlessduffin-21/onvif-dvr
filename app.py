@@ -1,5 +1,4 @@
-from flask import Flask, render_template, request, jsonify, Response, send_from_directory
-from flask_cors import CORS
+from flask import Flask, render_template, request, jsonify, Response, send_from_directory, abort
 from dotenv import load_dotenv
 import os
 import json
@@ -20,7 +19,6 @@ load_dotenv()
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
-CORS(app)
 
 # Initialize ONVIF manager
 onvif_manager = ONVIFManager()
@@ -78,6 +76,33 @@ def grid_page():
     """Multi-camera grid view"""
     return render_template('grid.html')
 
+
+@app.route('/embed/streams/<int:stream_id>')
+def embed_stream_page(stream_id):
+    """Minimal embed view for a single DVR stream"""
+    conn = get_db_connection()
+    try:
+        stream = conn.execute(
+            'SELECT vs.*, c.name AS camera_name FROM video_streams vs JOIN cameras c ON vs.camera_id = c.id WHERE vs.id = ?',
+            (stream_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not stream:
+        abort(404)
+
+    stream_dict = dict(stream)
+    embed_config = {
+        'stream_db_id': stream_dict['id'],
+        'camera_id': stream_dict['camera_id'],
+        'profile_token': stream_dict['profile_token'],
+        'stream_label': stream_dict.get('stream_label') or stream_dict.get('stream_variant') or 'Stream',
+        'camera_name': stream_dict.get('camera_name') or 'DVR'
+    }
+
+    return render_template('embed_stream.html', embed_config=embed_config)
+
 @app.route('/recordings')
 def recordings_page():
     """Recordings page"""
@@ -102,9 +127,21 @@ def get_cameras():
     """Get all cameras"""
     conn = get_db_connection()
     cameras = conn.execute('SELECT * FROM cameras ORDER BY created_at DESC').fetchall()
+
+    camera_list = []
+    for camera in cameras:
+        camera_dict = dict(camera)
+        streams = conn.execute(
+            'SELECT channel_number, stream_label, stream_variant FROM video_streams WHERE camera_id = ? ORDER BY channel_number, stream_variant',
+            (camera['id'],)
+        ).fetchall()
+        camera_dict['stream_count'] = len(streams)
+        camera_dict['stream_labels'] = [row['stream_label'] or row['stream_variant'] or 'Stream' for row in streams]
+        camera_list.append(camera_dict)
+
     conn.close()
     
-    return jsonify([dict(camera) for camera in cameras])
+    return jsonify(camera_list)
 
 @app.route('/api/cameras/<int:camera_id>', methods=['GET'])
 def get_camera(camera_id):
@@ -144,32 +181,9 @@ def add_camera():
                 'password': data['password']
             },
             result['device_info'],
-            result['profiles']
+            result['profiles'],
+            camera_object=result['camera']
         )
-        
-        # Get stream URIs for all profiles
-        camera = result['camera']
-        conn = get_db_connection()
-        
-        for profile in result['profiles']:
-            stream_uri = onvif_manager.get_stream_uri(camera, profile['token'])
-            if stream_uri:
-                conn.execute('''
-                    INSERT INTO video_streams (camera_id, profile_token, stream_uri, 
-                                              stream_type, protocol, resolution, codec)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    camera_id,
-                    profile['token'],
-                    stream_uri,
-                    'RTP-Unicast',
-                    'RTSP',
-                    json.dumps(profile.get('video_encoder', {}).get('resolution', {})),
-                    profile.get('video_encoder', {}).get('encoding', '')
-                ))
-        
-        conn.commit()
-        conn.close()
         
         return jsonify({'success': True, 'camera_id': camera_id})
     except Exception as e:
@@ -249,7 +263,7 @@ def refresh_cameras():
         conn.close()
 
     if not cameras:
-        return jsonify({'refreshed': [], 'errors': ['No cameras found to refresh']}), 404
+        return jsonify({'refreshed': [], 'errors': ['No DVRs found to refresh']}), 404
 
     refreshed = []
     errors = []
@@ -263,15 +277,6 @@ def refresh_cameras():
                 'camera_id': camera['id'],
                 'error': str(e)
             })
-            logger.exception("Failed to refresh camera %s", camera['id'])
-
-    status_code = 200 if refreshed else 500
-
-    return jsonify({
-        'refreshed': refreshed,
-        'errors': errors
-    }), status_code
-
 # ============================================================================
 # API Routes - Video Streaming (Profile S, T)
 # ============================================================================
@@ -290,40 +295,54 @@ def get_streams(camera_id):
 
 @app.route('/api/streams/overview', methods=['GET'])
 def get_stream_overview():
-    """Get first stream metadata for each camera"""
+    """Get detailed stream metadata across all cameras/DVRs"""
+    camera_id_filter = request.args.get('camera_id', type=int)
+    search = request.args.get('search', '').strip().lower()
+
     conn = get_db_connection()
-    cameras = conn.execute('SELECT id, name, host, port, status FROM cameras ORDER BY id').fetchall()
+    query = (
+        'SELECT vs.*, c.name AS camera_name, c.host, c.port, c.status AS camera_status '
+        'FROM video_streams vs '
+        'JOIN cameras c ON vs.camera_id = c.id '
+        'ORDER BY c.id, vs.channel_number, vs.stream_variant'
+    )
+
+    streams = conn.execute(query).fetchall()
+    conn.close()
 
     overview = []
-    for camera in cameras:
-        stream = conn.execute(
-            'SELECT profile_token, stream_type, protocol, resolution, framerate, bitrate, codec '
-            'FROM video_streams WHERE camera_id = ? ORDER BY id ASC LIMIT 1',
-            (camera['id'],)
-        ).fetchone()
+    for stream in streams:
+        if camera_id_filter and stream['camera_id'] != camera_id_filter:
+            continue
 
-        stream_info = None
-        if stream:
-            stream_info = {
-                'profile_token': stream['profile_token'],
-                'stream_type': stream['stream_type'],
-                'protocol': stream['protocol'],
-                'resolution': stream['resolution'],
-                'framerate': stream['framerate'],
-                'bitrate': stream['bitrate'],
-                'codec': stream['codec']
-            }
+        stream_label = stream['stream_label'] or stream['stream_variant'] or 'Stream'
+        haystack = ' '.join([
+            stream_label,
+            stream['camera_name'] or '',
+            f"channel {stream['channel_number']}" if stream['channel_number'] else ''
+        ]).lower()
+
+        if search and search not in haystack:
+            continue
 
         overview.append({
-            'camera_id': camera['id'],
-            'name': camera['name'],
-            'host': camera['host'],
-            'port': camera['port'],
-            'status': camera['status'],
-            'stream': stream_info
+            'id': stream['id'],
+            'camera_id': stream['camera_id'],
+            'camera_name': stream['camera_name'],
+            'host': stream['host'],
+            'port': stream['port'],
+            'camera_status': stream['camera_status'],
+            'profile_token': stream['profile_token'],
+            'stream_label': stream_label,
+            'stream_variant': stream['stream_variant'],
+            'channel_number': stream['channel_number'],
+            'stream_type': stream['stream_type'],
+            'protocol': stream['protocol'],
+            'resolution': stream['resolution'],
+            'framerate': stream['framerate'],
+            'bitrate': stream['bitrate'],
+            'codec': stream['codec']
         })
-
-    conn.close()
 
     return jsonify(overview)
 

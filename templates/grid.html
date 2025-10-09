@@ -1,26 +1,85 @@
 {% extends "base.html" %}
 
-{% block title %}Grid View - ONVIF Viewer{% endblock %}
+{% block title %}Stream Grid - ONVIF DVR Viewer{% endblock %}
 
 {% block content %}
-<div class="row">
-    <div class="col-12 d-flex flex-column flex-lg-row justify-content-between align-items-lg-center mb-4 gap-3">
-        <h2 class="mb-0"><i class="bi bi-grid-3x3-gap"></i> Multi-Camera Grid</h2>
+<div class="row align-items-center mb-4">
+    <div class="col-lg-7">
+        <h2 class="mb-1"><i class="bi bi-grid-3x3-gap"></i> DVR Stream Grid</h2>
+        <p class="text-muted mb-0">Launch multiple DVR channels at once, filtered by device, stream variant, or search terms.</p>
+    </div>
+    <div class="col-lg-5 text-lg-end mt-3 mt-lg-0">
         <div class="btn-group" role="group">
             <button class="btn btn-outline-secondary" id="refreshGridBtn">
-                <i class="bi bi-arrow-clockwise"></i> Refresh Grid
+                <i class="bi bi-arrow-clockwise"></i> Refresh Streams
             </button>
             <button class="btn btn-outline-danger" id="stopAllStreamsBtn">
-                <i class="bi bi-stop-circle"></i> Stop All Streams
+                <i class="bi bi-stop-circle"></i> Stop All
             </button>
         </div>
     </div>
 </div>
 
-<div class="row">
-    <div class="col-12">
-        <div id="gridContainer" class="camera-grid">
-            <!-- Camera cards will be injected here -->
+<div class="row g-3 align-items-end mb-4">
+    <div class="col-md-4 col-lg-3">
+        <label for="dvrFilter" class="form-label">DVR</label>
+        <select class="form-select" id="dvrFilter">
+            <option value="all">All DVRs</option>
+        </select>
+    </div>
+    <div class="col-md-4 col-lg-3">
+        <label for="variantFilter" class="form-label">Stream Variant</label>
+        <select class="form-select" id="variantFilter">
+            <option value="all">All variants</option>
+        </select>
+    </div>
+    <div class="col-md-4 col-lg-3">
+        <label for="streamSearch" class="form-label">Search</label>
+        <input type="search" class="form-control" id="streamSearch" placeholder="Search streams...">
+    </div>
+    <div class="col-lg-3 text-lg-end">
+        <div id="gridSummary" class="small text-muted">Loading...</div>
+    </div>
+</div>
+
+<div id="gridContainer" class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-3">
+    <!-- Stream cards render here -->
+</div>
+
+<!-- Embed Modal -->
+<div class="modal fade" id="embedModal" tabindex="-1" aria-labelledby="embedModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="embedModalLabel">Embed DVR Stream</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="small text-muted mb-3">Copy the URL or iframe snippet below to embed this live DVR stream in another dashboard or application.</p>
+                <div class="mb-3">
+                    <label for="embedUrlInput" class="form-label">Embed URL</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="embedUrlInput" readonly>
+                        <button type="button" class="btn btn-outline-secondary" id="copyEmbedUrlBtn">
+                            <i class="bi bi-clipboard"></i> Copy URL
+                        </button>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label for="embedCodeTextarea" class="form-label">Iframe Snippet</label>
+                    <textarea class="form-control" id="embedCodeTextarea" rows="3" readonly></textarea>
+                    <div class="form-text">Adjust width and height as needed for your layout. Streams default to autoplay and muted for compatibility.</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-primary" id="openEmbedPreviewBtn">
+                    <i class="bi bi-box-arrow-up-right"></i> Open Preview
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="copyEmbedCodeBtn">
+                    <i class="bi bi-clipboard-check"></i> Copy Embed Code
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -30,7 +89,47 @@
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 <script>
 const gridStreams = {};
+let cachedStreams = [];
 let isGridLoading = false;
+let activeDvrFilter = 'all';
+let activeVariantFilter = 'all';
+let searchTerm = '';
+let searchDebounce = null;
+let embedModalInstance = null;
+let activeEmbedStreamId = null;
+
+function escapeHtml(text) {
+    if (text === null || text === undefined) {
+        return '';
+    }
+    return $('<div>').text(text).html();
+}
+
+function getStreamById(streamId) {
+    const targetId = String(streamId);
+    return cachedStreams.find(stream => String(stream.id) === targetId) || null;
+}
+
+function buildEmbedUrl(streamId) {
+    const origin = window.location.origin || (window.location.protocol + '//' + window.location.host);
+    return `${origin}/embed/streams/${streamId}?autoplay=1&muted=1`;
+}
+
+function updateMuteButtonState(streamId, muted) {
+    const id = String(streamId);
+    const button = $(`#mute-btn-${id}`);
+    if (!button.length) {
+        return;
+    }
+    button.data('muted', muted);
+    if (muted) {
+        button.removeClass('btn-outline-primary').addClass('btn-outline-secondary');
+        button.html('<i class="bi bi-volume-mute"></i> Unmute');
+    } else {
+        button.removeClass('btn-outline-secondary').addClass('btn-outline-primary');
+        button.html('<i class="bi bi-volume-up"></i> Mute');
+    }
+}
 
 function setGridLoading(isLoading) {
     const button = $('#refreshGridBtn');
@@ -49,38 +148,171 @@ function setGridLoading(isLoading) {
         }
         button.prop('disabled', false);
     }
+
+    $('#dvrFilter, #variantFilter, #streamSearch, #stopAllStreamsBtn').prop('disabled', isLoading);
+
+    if (isLoading) {
+        $('#gridSummary').text('Loading...');
+    } else if (!cachedStreams.length) {
+        $('#gridSummary').text('No streams found');
+    }
 }
 
-function renderCameraCard(camera) {
-    const statusBadgeClass = camera.status === 'online' ? 'bg-success' : 'bg-secondary';
-    const card = $(`
-        <div class="card h-100 shadow-sm grid-card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-camera-video"></i> ${camera.name}</span>
-                <span class="badge ${statusBadgeClass}">${camera.status || 'unknown'}</span>
-            </div>
-            <div class="card-body">
-                <div class="ratio ratio-16x9 bg-dark position-relative mb-2 overflow-hidden">
-                    <video id="gridVideo-${camera.camera_id}" class="w-100" autoplay muted playsinline></video>
-                    <div class="grid-loading position-absolute top-50 start-50 translate-middle text-center text-white" id="loader-${camera.camera_id}">
-                        <div class="spinner-border spinner-border-sm" role="status"></div>
-                        <div class="mt-2 small">Starting...</div>
+function updateGridSummary(shownCount) {
+    const total = cachedStreams.length;
+    let text;
+
+    if (!total) {
+        text = 'No streams found';
+    } else if (shownCount === total) {
+        text = `${shownCount} stream${shownCount === 1 ? '' : 's'} shown`;
+    } else {
+        text = `${shownCount} of ${total} stream${total === 1 ? '' : 's'} shown`;
+    }
+
+    $('#gridSummary').text(text);
+}
+
+function populateFilters() {
+    const dvrSelect = $('#dvrFilter');
+    const variantSelect = $('#variantFilter');
+    const previousDvr = dvrSelect.val() || 'all';
+    const previousVariant = variantSelect.val() || 'all';
+
+    dvrSelect.find('option:not([value="all"])').remove();
+    variantSelect.find('option:not([value="all"])').remove();
+
+    const dvrMap = new Map();
+    const variantSet = new Set();
+
+    cachedStreams.forEach(stream => {
+        if (stream.camera_id !== null && stream.camera_id !== undefined) {
+            dvrMap.set(stream.camera_id, stream.camera_name || `DVR ${stream.camera_id}`);
+        }
+        if (stream.stream_variant) {
+            variantSet.add(stream.stream_variant);
+        }
+    });
+
+    Array.from(dvrMap.entries())
+        .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
+        .forEach(([id, name]) => {
+            dvrSelect.append($('<option>').val(String(id)).text(name));
+        });
+
+    Array.from(variantSet)
+        .sort()
+        .forEach(variant => {
+            variantSelect.append($('<option>').val(variant).text(variant));
+        });
+
+    if (dvrSelect.val(previousDvr) === previousDvr && previousDvr !== null) {
+        activeDvrFilter = previousDvr;
+    } else {
+        dvrSelect.val('all');
+        activeDvrFilter = 'all';
+    }
+
+    if (variantSelect.val(previousVariant) === previousVariant && previousVariant !== null) {
+        activeVariantFilter = previousVariant;
+    } else {
+        variantSelect.val('all');
+        activeVariantFilter = 'all';
+    }
+}
+
+function renderStreamCard(stream) {
+    const streamKey = String(stream.id);
+    const statusBadgeClass = stream.camera_status === 'online' ? 'bg-success' : 'bg-secondary';
+    const streamLabel = stream.stream_label || `Channel ${stream.channel_number || ''}`;
+
+    let resolutionText = '';
+    if (stream.resolution) {
+        try {
+            const parsed = JSON.parse(stream.resolution);
+            if (parsed && parsed.width && parsed.height) {
+                resolutionText = `${parsed.width}x${parsed.height}`;
+            }
+        } catch (error) {
+            console.warn('Failed to parse resolution for stream', stream.id, error);
+        }
+    }
+
+    const metaParts = [];
+    if (stream.stream_variant) {
+        metaParts.push(stream.stream_variant);
+    }
+    if (resolutionText) {
+        metaParts.push(resolutionText);
+    }
+    if (stream.codec) {
+        metaParts.push(stream.codec);
+    }
+    if (stream.framerate) {
+        metaParts.push(`${stream.framerate}fps`);
+    }
+    if (stream.bitrate) {
+        metaParts.push(`${stream.bitrate} kbps`);
+    }
+    const metaDisplay = metaParts.length ? escapeHtml(metaParts.join(' • ')) : '&mdash;';
+
+    return $(
+        `<div class="col">
+            <div class="card h-100 shadow-sm grid-card"
+                 data-stream-id="${streamKey}"
+                 data-camera-id="${stream.camera_id != null ? stream.camera_id : ''}"
+                 data-profile-token="${escapeHtml(stream.profile_token || '')}"
+                 data-stream-label="${escapeHtml(streamLabel)}">
+                <div class="card-header d-flex justify-content-between align-items-start">
+                    <div>
+                        <div class="fw-semibold">${escapeHtml(streamLabel)}</div>
+                        <div class="small text-muted">${escapeHtml(stream.camera_name || '')}</div>
+                    </div>
+                    <span class="badge ${statusBadgeClass}">${stream.camera_status || 'unknown'}</span>
+                </div>
+                <div class="card-body">
+                    <div class="ratio ratio-16x9 bg-dark position-relative mb-2 overflow-hidden">
+                        <video id="gridVideo-${streamKey}" class="w-100" autoplay muted playsinline></video>
+                        <div class="grid-loading position-absolute top-50 start-50 translate-middle text-center text-white" id="loader-${streamKey}">
+                            <div class="spinner-border spinner-border-sm" role="status"></div>
+                            <div class="mt-2 small">Starting...</div>
+                        </div>
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <small class="text-muted">${escapeHtml(`${stream.host}:${stream.port}`)}</small>
+                        <small id="card-status-${streamKey}" class="text-muted">${stream.camera_status === 'online' ? 'Queued' : 'Offline'}</small>
+                    </div>
+                    <div class="small text-muted">${metaDisplay}</div>
+                    <div class="d-flex flex-wrap gap-2 mt-3">
+                        <div class="btn-group btn-group-sm" role="group" aria-label="Playback controls">
+                            <button type="button" class="btn btn-outline-success grid-control-play" title="Play">
+                                <i class="bi bi-play-fill"></i> Play
+                            </button>
+                            <button type="button" class="btn btn-outline-warning grid-control-pause" title="Pause">
+                                <i class="bi bi-pause-fill"></i> Pause
+                            </button>
+                            <button type="button" class="btn btn-outline-danger grid-control-stop" title="Stop">
+                                <i class="bi bi-stop-fill"></i> Stop
+                            </button>
+                            <button type="button" class="btn btn-outline-secondary grid-control-mute" id="mute-btn-${streamKey}" data-muted="true" title="Toggle mute">
+                                <i class="bi bi-volume-mute"></i> Unmute
+                            </button>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-info copy-embed-btn" title="Copy embed link">
+                            <i class="bi bi-code"></i> Embed
+                        </button>
                     </div>
                 </div>
-                <div class="d-flex justify-content-between align-items-center">
-                    <small class="text-muted">${camera.host}:${camera.port}</small>
-                    <small id="card-status-${camera.camera_id}" class="text-muted">Pending</small>
-                </div>
             </div>
-        </div>
-    `);
-    return card;
+        </div>`
+    );
 }
 
-function attachHlsToVideo(cameraId, playlistUrl) {
-    const videoElement = document.getElementById(`gridVideo-${cameraId}`);
-    const loader = $(`#loader-${cameraId}`);
-    const status = $(`#card-status-${cameraId}`);
+function attachHlsToVideo(streamId, playlistUrl) {
+    const streamKey = String(streamId);
+    const videoElement = document.getElementById(`gridVideo-${streamKey}`);
+    const loader = $(`#loader-${streamKey}`);
+    const status = $(`#card-status-${streamKey}`);
 
     if (!videoElement) {
         return;
@@ -90,13 +322,20 @@ function attachHlsToVideo(cameraId, playlistUrl) {
     videoElement.autoplay = true;
     videoElement.playsInline = true;
 
+    const entry = gridStreams[streamKey] = gridStreams[streamKey] || {};
+
     const onPlaybackStarted = () => {
         loader.hide();
         status.text('Playing');
+        updateMuteButtonState(streamKey, videoElement.muted);
     };
 
-    if (gridStreams[cameraId] && gridStreams[cameraId].hls) {
-        gridStreams[cameraId].hls.destroy();
+    if (entry.hls) {
+        try {
+            entry.hls.destroy();
+        } catch (error) {
+            console.warn('Failed to destroy previous HLS instance', error);
+        }
     }
 
     if (Hls.isSupported()) {
@@ -135,10 +374,7 @@ function attachHlsToVideo(cameraId, playlistUrl) {
             }
         });
 
-        gridStreams[cameraId] = {
-            streamId: gridStreams[cameraId]?.streamId || null,
-            hls: hlsInstance
-        };
+        entry.hls = hlsInstance;
     } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
         videoElement.src = playlistUrl;
         videoElement.addEventListener('loadedmetadata', function handleLoaded() {
@@ -146,41 +382,84 @@ function attachHlsToVideo(cameraId, playlistUrl) {
             videoElement.play().then(onPlaybackStarted);
         });
 
-        gridStreams[cameraId] = {
-            streamId: gridStreams[cameraId]?.streamId || null,
-            hls: null
-        };
+        entry.hls = null;
     } else {
         loader.hide();
         status.text('HLS not supported');
     }
 }
 
-function startGridStream(camera) {
-    const loader = $(`#loader-${camera.camera_id}`);
-    const status = $(`#card-status-${camera.camera_id}`);
+function resumeGridStream(streamId) {
+    const stream = getStreamById(streamId);
+    if (!stream) {
+        alert('Unable to locate stream details. Refresh the grid and try again.');
+        return;
+    }
+
+    const streamKey = String(streamId);
+    const entry = gridStreams[streamKey];
+    const videoElement = document.getElementById(`gridVideo-${streamKey}`);
+    const loader = $(`#loader-${streamKey}`);
+    const status = $(`#card-status-${streamKey}`);
+
+    if (entry && videoElement && !videoElement.paused && !videoElement.ended) {
+        status.text(videoElement.muted ? 'Playing (muted)' : 'Playing');
+        loader.hide();
+        return;
+    }
+
+    if (entry && videoElement) {
+        loader.show();
+        status.text('Resuming...');
+        videoElement.play().then(() => {
+            loader.hide();
+            status.text(videoElement.muted ? 'Playing (muted)' : 'Playing');
+        }).catch(() => {
+            startGridStream(stream);
+        });
+    } else {
+        startGridStream(stream);
+    }
+}
+
+function pauseGridStream(streamId) {
+    const streamKey = String(streamId);
+    const videoElement = document.getElementById(`gridVideo-${streamKey}`);
+    const status = $(`#card-status-${streamKey}`);
+
+    if (videoElement) {
+        videoElement.pause();
+        status.text('Paused');
+    }
+}
+
+function startGridStream(stream) {
+    const streamKey = String(stream.id);
+    const loader = $(`#loader-${streamKey}`);
+    const status = $(`#card-status-${streamKey}`);
 
     loader.show();
     status.text('Starting...');
+
+    gridStreams[streamKey] = gridStreams[streamKey] || {};
 
     const request = $.ajax({
         url: '/api/streams/start',
         method: 'POST',
         contentType: 'application/json',
         data: JSON.stringify({
-            camera_id: camera.camera_id,
-            profile_token: camera.stream.profile_token
+            camera_id: stream.camera_id,
+            profile_token: stream.profile_token
         })
     });
 
     request.done(function(response) {
-        gridStreams[camera.camera_id] = gridStreams[camera.camera_id] || {};
-        gridStreams[camera.camera_id].streamId = response.stream_id;
+        gridStreams[streamKey].streamId = response.stream_id;
 
         status.text(response.already_running ? 'Connecting...' : 'Buffering...');
         const delay = response.already_running ? 500 : 2000;
         setTimeout(() => {
-            attachHlsToVideo(camera.camera_id, response.playlist_url);
+            attachHlsToVideo(stream.id, response.playlist_url);
         }, delay);
     }).fail(function(xhr) {
         const error = xhr.responseJSON?.error || 'Failed to start stream';
@@ -191,14 +470,28 @@ function startGridStream(camera) {
     return request;
 }
 
-function stopGridStream(cameraId) {
-    const entry = gridStreams[cameraId];
+function stopGridStream(streamId) {
+    const streamKey = String(streamId);
+    const entry = gridStreams[streamKey];
     if (!entry) {
+        const videoElement = document.getElementById(`gridVideo-${streamKey}`);
+        if (videoElement) {
+            videoElement.pause();
+            videoElement.removeAttribute('src');
+            videoElement.load();
+        }
+        updateMuteButtonState(streamKey, true);
+        $(`#card-status-${streamKey}`).text('Stopped');
+        $(`#loader-${streamKey}`).hide();
         return $.Deferred().resolve().promise();
     }
 
     if (entry.hls) {
-        entry.hls.destroy();
+        try {
+            entry.hls.destroy();
+        } catch (error) {
+            console.warn('Failed to destroy HLS instance', error);
+        }
     }
 
     const request = entry.streamId ? $.ajax({
@@ -212,75 +505,267 @@ function stopGridStream(cameraId) {
         console.error('Failed to stop grid stream', xhr.responseJSON || xhr.statusText);
     }) : $.Deferred().resolve().promise();
 
-    delete gridStreams[cameraId];
-    $(`#card-status-${cameraId}`).text('Stopped');
-    $(`#loader-${cameraId}`).hide();
-
-    return request;
+    return request.always(function() {
+        delete gridStreams[streamKey];
+        $(`#card-status-${streamKey}`).text('Stopped');
+        $(`#loader-${streamKey}`).hide();
+        const videoElement = document.getElementById(`gridVideo-${streamKey}`);
+        if (videoElement) {
+            videoElement.pause();
+            videoElement.removeAttribute('src');
+            videoElement.load();
+        }
+        updateMuteButtonState(streamKey, true);
+    });
 }
 
 function stopAllGridStreams() {
-    const cameraIds = Object.keys(gridStreams);
-    if (cameraIds.length === 0) {
+    const streamIds = Object.keys(gridStreams);
+    if (!streamIds.length) {
         return $.Deferred().resolve().promise();
     }
 
-    const requests = cameraIds.map(id => stopGridStream(id));
+    const requests = streamIds.map(id => stopGridStream(id));
     return $.when.apply($, requests);
+}
+
+function matchesFilters(stream) {
+    if (activeDvrFilter !== 'all' && String(stream.camera_id) !== String(activeDvrFilter)) {
+        return false;
+    }
+    if (activeVariantFilter !== 'all' && stream.stream_variant !== activeVariantFilter) {
+        return false;
+    }
+    if (!searchTerm) {
+        return true;
+    }
+
+    const haystack = [
+        stream.stream_label,
+        stream.camera_name,
+        stream.stream_variant,
+        stream.codec,
+        stream.profile_token,
+        stream.channel_number ? `channel ${stream.channel_number}` : ''
+    ].join(' ').toLowerCase();
+
+    return haystack.includes(searchTerm);
+}
+
+function renderFilteredStreams(streams) {
+    stopAllGridStreams().always(function() {
+        const container = $('#gridContainer');
+        container.empty();
+
+        if (!streams.length) {
+            container.html('<div class="col"><div class="alert alert-light border">No streams match the current filters.</div></div>');
+            updateGridSummary(0);
+            return;
+        }
+
+        streams.forEach(stream => {
+            container.append(renderStreamCard(stream));
+        });
+
+        streams.forEach(stream => {
+            startGridStream(stream);
+        });
+
+        updateGridSummary(streams.length);
+        activeEmbedStreamId = null;
+    });
+}
+
+function applyFilters() {
+    const filtered = cachedStreams.filter(matchesFilters);
+    renderFilteredStreams(filtered);
+}
+
+function toggleGridMute(streamId) {
+    const streamKey = String(streamId);
+    const videoElement = document.getElementById(`gridVideo-${streamKey}`);
+    const status = $(`#card-status-${streamKey}`);
+
+    if (!videoElement) {
+        return;
+    }
+
+    const newMuted = !videoElement.muted;
+    videoElement.muted = newMuted;
+    updateMuteButtonState(streamKey, newMuted);
+    if (!videoElement.paused) {
+        status.text(newMuted ? 'Playing (muted)' : 'Playing');
+    }
+}
+
+function showEmbedModal(stream) {
+    if (!stream || !embedModalInstance) {
+        return;
+    }
+
+    activeEmbedStreamId = stream.id;
+    const label = stream.stream_label || stream.stream_variant || `Stream ${stream.id}`;
+    const embedUrl = buildEmbedUrl(stream.id);
+
+    $('#embedModalLabel').text(`${label} Embed`);
+    $('#embedUrlInput').val(embedUrl);
+    $('#embedCodeTextarea').val(`<iframe src="${embedUrl}" width="640" height="360" frameborder="0" allowfullscreen></iframe>`);
+
+    embedModalInstance.show();
+}
+
+function copyToClipboard(text, button, successMessage) {
+    if (!text) {
+        return;
+    }
+
+    const message = successMessage || 'Copied!';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+            indicateCopySuccess(button, message);
+        }).catch(() => {
+            fallbackCopy(text, button, message);
+        });
+    } else {
+        fallbackCopy(text, button, message);
+    }
+}
+
+function indicateCopySuccess(button, message) {
+    const $button = $(button);
+    if (!$button.length) {
+        return;
+    }
+
+    if (!$button.data('original-html')) {
+        $button.data('original-html', $button.html());
+    }
+
+    $button.html(`<i class="bi bi-check-lg"></i> ${message}`);
+    setTimeout(() => {
+        const original = $button.data('original-html');
+        if (original) {
+            $button.html(original);
+        }
+    }, 1500);
+}
+
+function fallbackCopy(text, button, successMessage) {
+    const temp = $('<textarea>');
+    $('body').append(temp);
+    temp.val(text).select();
+    try {
+        document.execCommand('copy');
+        indicateCopySuccess(button, successMessage);
+    } catch (error) {
+        console.error('Failed to copy embed text', error);
+    }
+    temp.remove();
 }
 
 function loadGrid() {
     if (isGridLoading) {
         return;
     }
+
     isGridLoading = true;
     setGridLoading(true);
 
-    stopAllGridStreams().always(function() {
-        const container = $('#gridContainer');
-        container.empty();
-
-        $.get('/api/streams/overview', function(cameras) {
-            if (!cameras || cameras.length === 0) {
-                container.html('<p class="text-muted">No cameras available.</p>');
-                return;
-            }
-
-            cameras.forEach(camera => {
-                const card = renderCameraCard(camera);
-                container.append(card);
-
-                if (!camera.stream || !camera.stream.profile_token) {
-                    $(`#loader-${camera.camera_id}`).hide();
-                    $(`#card-status-${camera.camera_id}`).text('No stream available');
-                    const wrapper = $(`#gridVideo-${camera.camera_id}`).parent();
-                    wrapper.addClass('bg-light d-flex justify-content-center align-items-center');
-                    wrapper.find('video').remove();
-                    wrapper.append('<span class="text-muted">Stream not configured</span>');
-                    return;
-                }
-
-                startGridStream(camera);
-            });
-        }).fail(function(xhr) {
-            const error = xhr.responseJSON?.error || 'Unable to load camera overview.';
-            $('#gridContainer').html(`<div class="alert alert-danger">${error}</div>`);
-        }).always(function() {
-            isGridLoading = false;
-            setGridLoading(false);
-        });
+    $.get('/api/streams/overview', function(streams) {
+        cachedStreams = Array.isArray(streams) ? streams : [];
+        populateFilters();
+        applyFilters();
+    }).fail(function(xhr) {
+        const error = xhr.responseJSON?.error || 'Unable to load streams.';
+        $('#gridContainer').html(`<div class="col"><div class="alert alert-danger">${escapeHtml(error)}</div></div>`);
+        cachedStreams = [];
+        populateFilters();
+        updateGridSummary(0);
+    }).always(function() {
+        isGridLoading = false;
+        setGridLoading(false);
     });
 }
 
 $(document).ready(function() {
+    const modalElement = document.getElementById('embedModal');
+    if (modalElement) {
+        embedModalInstance = new bootstrap.Modal(modalElement);
+        modalElement.addEventListener('hidden.bs.modal', function() {
+            activeEmbedStreamId = null;
+        });
+    }
+
     loadGrid();
 
-    $('#refreshGridBtn').on('click', function() {
-        loadGrid();
-    });
+    $('#refreshGridBtn').on('click', loadGrid);
 
     $('#stopAllStreamsBtn').on('click', function() {
         stopAllGridStreams();
+    });
+
+    $('#dvrFilter').on('change', function() {
+        activeDvrFilter = $(this).val() || 'all';
+        applyFilters();
+    });
+
+    $('#variantFilter').on('change', function() {
+        activeVariantFilter = $(this).val() || 'all';
+        applyFilters();
+    });
+
+    $('#streamSearch').on('input', function() {
+        const value = $(this).val() || '';
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(function() {
+            searchTerm = value.trim().toLowerCase();
+            applyFilters();
+        }, 250);
+    });
+
+    $('#gridContainer').on('click', '.grid-control-play', function() {
+        const streamId = $(this).closest('.grid-card').data('stream-id');
+        resumeGridStream(streamId);
+    });
+
+    $('#gridContainer').on('click', '.grid-control-pause', function() {
+        const streamId = $(this).closest('.grid-card').data('stream-id');
+        pauseGridStream(streamId);
+    });
+
+    $('#gridContainer').on('click', '.grid-control-stop', function() {
+        const streamId = $(this).closest('.grid-card').data('stream-id');
+        stopGridStream(streamId);
+    });
+
+    $('#gridContainer').on('click', '.grid-control-mute', function() {
+        const streamId = $(this).closest('.grid-card').data('stream-id');
+        toggleGridMute(streamId);
+    });
+
+    $('#gridContainer').on('click', '.copy-embed-btn', function() {
+        const streamId = $(this).closest('.grid-card').data('stream-id');
+        const stream = getStreamById(streamId);
+        if (!stream) {
+            alert('Stream details unavailable for embedding. Try refreshing the grid.');
+            return;
+        }
+        showEmbedModal(stream);
+    });
+
+    $('#copyEmbedUrlBtn').on('click', function() {
+        copyToClipboard($('#embedUrlInput').val(), this, 'URL copied');
+    });
+
+    $('#copyEmbedCodeBtn').on('click', function() {
+        copyToClipboard($('#embedCodeTextarea').val(), this, 'Embed copied');
+    });
+
+    $('#openEmbedPreviewBtn').on('click', function() {
+        const url = $('#embedUrlInput').val();
+        if (url) {
+            window.open(url, '_blank', 'noopener');
+        }
     });
 
     $(window).on('beforeunload', function() {

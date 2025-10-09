@@ -6,7 +6,7 @@ import requests
 import time
 import json
 
-BASE_URL = "http://localhost:5001"
+BASE_URL = "http://localhost:8821"
 
 def test_rapid_play_clicks():
     """Test that rapid play clicks don't cause errors"""
@@ -140,6 +140,6 @@ if __name__ == "__main__":
         
     except requests.exceptions.ConnectionError:
         print("\n❌ Error: Could not connect to Flask server")
-        print("Make sure the server is running on http://localhost:5001")
+        print("Make sure the server is running on http://localhost:8821")
     except Exception as e:
         print(f"\n❌ Error: {e}")

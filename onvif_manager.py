@@ -2,8 +2,10 @@ from onvif import ONVIFCamera  # type: ignore
 from onvif.exceptions import ONVIFError  # type: ignore
 import socket
 import json
+import re
 from datetime import datetime
 from database import get_db_connection
+from urllib.parse import urlparse, parse_qs
 
 class ONVIFManager:
     """Manager class for ONVIF camera operations"""
@@ -119,6 +121,138 @@ class ONVIFManager:
             return profile_list
         except Exception as e:
             return []
+
+    def _derive_stream_metadata(self, profile_data, stream_uri, index):
+        """Derive channel number, variant (main/sub), and label from profile/URI"""
+        channel_number = None
+        stream_variant = None
+
+        if stream_uri:
+            parsed = urlparse(stream_uri)
+            params = parse_qs(parsed.query)
+
+            channel_values = params.get('channel') or params.get('chn')
+            if channel_values:
+                try:
+                    channel_number = int(channel_values[0])
+                except (ValueError, TypeError):
+                    pass
+
+            subtype_values = params.get('subtype') or params.get('stream')
+            if subtype_values:
+                subtype_value = str(subtype_values[0]).lower()
+                if subtype_value in ('0', 'main', 'primary'):
+                    stream_variant = 'Main Stream'
+                elif subtype_value in ('1', 'sub', 'substream', 'secondary'):
+                    stream_variant = 'Sub Stream'
+                elif subtype_value in ('2', 'third'):  # Some devices expose tertiary streams
+                    stream_variant = 'Third Stream'
+
+        video_source = profile_data.get('video_source') or {}
+        source_token = video_source.get('source_token', '') if isinstance(video_source, dict) else ''
+
+        if channel_number is None and source_token:
+            digits = re.findall(r'\d+', source_token)
+            if digits:
+                try:
+                    channel_number = int(digits[-1])
+                except (ValueError, TypeError):
+                    channel_number = None
+
+        if channel_number is None:
+            channel_number = index + 1
+
+        profile_name = profile_data.get('name') or ''
+        if not stream_variant and profile_name:
+            name_lower = profile_name.lower()
+            if 'main' in name_lower:
+                stream_variant = 'Main Stream'
+            elif 'sub' in name_lower or 'secondary' in name_lower:
+                stream_variant = 'Sub Stream'
+            elif 'third' in name_lower:
+                stream_variant = 'Third Stream'
+
+        if not stream_variant:
+            stream_variant = 'Stream'
+
+        stream_label = f"Channel {channel_number} - {stream_variant}" if channel_number else stream_variant
+
+        return channel_number, stream_variant, stream_label
+
+    def _sync_profiles_to_db(self, camera_row, onvif_camera, cursor):
+        """Fetch profiles/streams from device and persist to the database"""
+        media_service = onvif_camera.create_media_service()
+        profiles = media_service.GetProfiles()
+
+        camera_id = camera_row['id'] if isinstance(camera_row, dict) else camera_row.id
+
+        cursor.execute('DELETE FROM camera_profiles WHERE camera_id = ?', (camera_id,))
+        cursor.execute('DELETE FROM video_streams WHERE camera_id = ?', (camera_id,))
+
+        profile_payload = []
+
+        for index, profile in enumerate(profiles):
+            serialized_profile = self._serialize_profile(profile)
+            profile_payload.append(serialized_profile)
+
+            cursor.execute('''
+                INSERT INTO camera_profiles (camera_id, profile_token, profile_name,
+                                            profile_type, video_encoder_config, video_source_config,
+                                            audio_encoder_config, ptz_config)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                camera_id,
+                serialized_profile['token'],
+                serialized_profile['name'],
+                'Media',
+                json.dumps(serialized_profile.get('video_encoder', {})),
+                json.dumps(serialized_profile.get('video_source', {})),
+                json.dumps(serialized_profile.get('audio_encoder', {})),
+                json.dumps(serialized_profile.get('ptz', {}))
+            ))
+
+            stream_uri = self.get_stream_uri(onvif_camera, serialized_profile['token'])
+
+            resolution = None
+            framerate = None
+            bitrate = None
+            codec = None
+
+            video_encoder = serialized_profile.get('video_encoder') or {}
+            if video_encoder:
+                resolution = json.dumps(video_encoder.get('resolution', {}))
+                framerate = video_encoder.get('framerate_limit')
+                bitrate = video_encoder.get('bitrate_limit')
+                codec = video_encoder.get('encoding')
+
+            channel_number, stream_variant, stream_label = self._derive_stream_metadata(
+                serialized_profile,
+                stream_uri,
+                index
+            )
+
+            cursor.execute('''
+                INSERT INTO video_streams (camera_id, profile_token, stream_uri,
+                                          stream_type, protocol, resolution, framerate,
+                                          bitrate, codec, channel_number, stream_variant, stream_label, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                camera_id,
+                serialized_profile['token'],
+                stream_uri or '',
+                'RTP-Unicast',
+                'RTSP',
+                resolution,
+                framerate,
+                bitrate,
+                codec,
+                channel_number,
+                stream_variant,
+                stream_label,
+                0
+            ))
+
+        return profile_payload
     
     def get_stream_uri(self, camera, profile_token, stream_type='RTP-Unicast', protocol='RTSP'):
         """Get stream URI for a profile (Profile S, T)"""
@@ -271,7 +405,7 @@ class ONVIFManager:
         except Exception as e:
             return []
     
-    def save_camera_to_db(self, camera_data, device_info, profiles):
+    def save_camera_to_db(self, camera_data, device_info, profiles, camera_object=None):
         """Save camera configuration to database"""
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -298,24 +432,15 @@ class ONVIFManager:
             
             camera_id = cursor.lastrowid
             
-            # Insert profiles
-            for profile in profiles:
-                cursor.execute('''
-                    INSERT INTO camera_profiles (camera_id, profile_token, profile_name, 
-                                                profile_type, video_encoder_config, video_source_config,
-                                                audio_encoder_config, ptz_config)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    camera_id,
-                    profile['token'],
-                    profile['name'],
-                    'Media',
-                    json.dumps(profile.get('video_encoder', {})),
-                    json.dumps(profile.get('video_source', {})),
-                    json.dumps(profile.get('audio_encoder', {})),
-                    json.dumps(profile.get('ptz', {}))
-                ))
-            
+            if camera_object is not None:
+                temp_camera_row = dict(camera_data)
+                temp_camera_row['id'] = camera_id
+                profile_payload = self._sync_profiles_to_db(temp_camera_row, camera_object, cursor)
+                cursor.execute(
+                    'UPDATE cameras SET profiles_supported = ? WHERE id = ?',
+                    (json.dumps(profile_payload), camera_id)
+                )
+
             conn.commit()
             return camera_id
         except Exception as e:
@@ -339,68 +464,7 @@ class ONVIFManager:
                 camera_data['password']
             )
 
-            media_service = onvif_camera.create_media_service()
-            profiles = media_service.GetProfiles()
-
-            # Clear existing profile and stream records
-            cursor.execute('DELETE FROM camera_profiles WHERE camera_id = ?', (camera_id,))
-            cursor.execute('DELETE FROM video_streams WHERE camera_id = ?', (camera_id,))
-
-            profile_payload = []
-
-            for profile in profiles:
-                serialized_profile = self._serialize_profile(profile)
-                profile_payload.append(serialized_profile)
-
-                cursor.execute('''
-                    INSERT INTO camera_profiles (camera_id, profile_token, profile_name,
-                                                profile_type, video_encoder_config, video_source_config,
-                                                audio_encoder_config, ptz_config)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    camera_id,
-                    serialized_profile['token'],
-                    serialized_profile['name'],
-                    'Media',
-                    json.dumps(serialized_profile.get('video_encoder', {})),
-                    json.dumps(serialized_profile.get('video_source', {})),
-                    json.dumps(serialized_profile.get('audio_encoder', {})),
-                    json.dumps(serialized_profile.get('ptz', {}))
-                ))
-
-                # Fetch stream URI for the profile
-                stream_uri = self.get_stream_uri(onvif_camera, serialized_profile['token'])
-
-                resolution = None
-                framerate = None
-                bitrate = None
-                codec = None
-
-                video_encoder = serialized_profile.get('video_encoder') or {}
-                if video_encoder:
-                    resolution = json.dumps(video_encoder.get('resolution', {}))
-                    framerate = video_encoder.get('framerate_limit')
-                    bitrate = video_encoder.get('bitrate_limit')
-                    codec = video_encoder.get('encoding')
-
-                cursor.execute('''
-                    INSERT INTO video_streams (camera_id, profile_token, stream_uri,
-                                              stream_type, protocol, resolution, framerate,
-                                              bitrate, codec, is_active)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    camera_id,
-                    serialized_profile['token'],
-                    stream_uri or '',
-                    'RTP-Unicast',
-                    'RTSP',
-                    resolution,
-                    framerate,
-                    bitrate,
-                    codec,
-                    0
-                ))
-
+            profile_payload = self._sync_profiles_to_db(camera_data, onvif_camera, cursor)
             device_info = self.get_device_info(onvif_camera)
             manufacturer = device_info.get('manufacturer') if isinstance(device_info, dict) else camera_data.get('manufacturer')
             model = device_info.get('model') if isinstance(device_info, dict) else camera_data.get('model')
@@ -431,7 +495,8 @@ class ONVIFManager:
 
             return {
                 'camera_id': camera_id,
-                'profiles_refreshed': len(profile_payload)
+                'profiles_refreshed': len(profile_payload),
+                'streams_refreshed': len(profile_payload)
             }
         except Exception as e:
             conn.rollback()

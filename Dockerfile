@@ -21,6 +21,6 @@ ENV FLASK_ENV=production \
 # Precompile bytecode to verify syntax at build time
 RUN python -m compileall .
 
-EXPOSE 5001
+EXPOSE 8821
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5001", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8821", "app:app"]

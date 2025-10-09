@@ -5,7 +5,7 @@ services:
     build: .
     container_name: onvif-viewer
     ports:
-      - "5001:5001"
+      - "8821:8821"
     environment:
       - FLASK_ENV=production
       - DATABASE_PATH=/data/onvif_viewer.db
