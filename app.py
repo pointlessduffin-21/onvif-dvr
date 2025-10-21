@@ -143,6 +143,114 @@ def get_cameras():
     
     return jsonify(camera_list)
 
+@app.route('/api/dvr/channels', methods=['GET'])
+def get_dvr_channels():
+    """Get DVR channels with detailed information
+    
+    Query parameters:
+    - dvr_id: (optional) Get channels for specific DVR
+    - channel_id: (optional) Get specific channel by ID
+    
+    Returns:
+    {
+        "dvr_id": 1,
+        "dvr_name": "Dahua DVR 1",
+        "status": "online",
+        "channels": [
+            {
+                "channel_id": 1,
+                "channel_name": "Camera 1",
+                "status": 1,
+                "rtsp_feed": "rtsp://xxx.xxx.xxx.xxx/...",
+                "iframe": "https://xxx.xxx.xxx.xxx/..."
+            }
+        ]
+    }
+    """
+    dvr_id = request.args.get('dvr_id', type=int)
+    channel_id = request.args.get('channel_id', type=int)
+    
+    conn = get_db_connection()
+    
+    try:
+        # Get camera(s)
+        if dvr_id:
+            camera = conn.execute('SELECT * FROM cameras WHERE id = ?', (dvr_id,)).fetchone()
+            if not camera:
+                return jsonify({'error': 'DVR not found'}), 404
+            cameras = [camera]
+        else:
+            cameras = conn.execute('SELECT * FROM cameras ORDER BY id').fetchall()
+        
+        result = []
+        
+        for camera in cameras:
+            # Get streams/channels for this camera
+            if channel_id:
+                streams = conn.execute('''
+                    SELECT * FROM video_streams 
+                    WHERE camera_id = ? AND channel_number = ?
+                    ORDER BY stream_variant
+                ''', (camera['id'], channel_id)).fetchall()
+            else:
+                streams = conn.execute('''
+                    SELECT * FROM video_streams 
+                    WHERE camera_id = ?
+                    ORDER BY channel_number, stream_variant
+                ''', (camera['id'],)).fetchall()
+            
+            # Build channels list
+            channels = []
+            for stream in streams:
+                # Determine status (1 = online, 0 = offline based on camera status)
+                stream_status = 1 if camera['status'] == 'online' else 0
+                
+                # Build iframe URL - using the embed endpoint
+                iframe_url = f"https://{request.host}/embed/streams/{stream['id']}"
+                if request.scheme == 'http':
+                    iframe_url = f"http://{request.host}/embed/streams/{stream['id']}"
+                
+                channel = {
+                    'channel_id': stream['channel_number'] or stream['id'],
+                    'channel_name': stream['stream_label'] or stream['stream_variant'] or f"Stream {stream['id']}",
+                    'status': stream_status,
+                    'rtsp_feed': stream['stream_uri'],
+                    'iframe': iframe_url,
+                    'stream_id': stream['id'],
+                    'profile_token': stream['profile_token'],
+                    'codec': stream['codec'],
+                    'resolution': stream['resolution'],
+                    'framerate': stream['framerate'],
+                    'bitrate': stream['bitrate']
+                }
+                channels.append(channel)
+            
+            # Build DVR entry
+            dvr_entry = {
+                'dvr_id': camera['id'],
+                'dvr_name': camera['name'],
+                'dvr_host': camera['host'],
+                'dvr_port': camera['port'],
+                'status': camera['status'],
+                'manufacturer': camera['manufacturer'],
+                'model': camera['model'],
+                'serial_number': camera['serial_number'],
+                'channels': channels
+            }
+            result.append(dvr_entry)
+        
+        conn.close()
+        
+        # Return single DVR or list based on query
+        if dvr_id:
+            return jsonify(result[0] if result else {'error': 'No channels found'})
+        else:
+            return jsonify(result)
+    
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/cameras/<int:camera_id>', methods=['GET'])
 def get_camera(camera_id):
     """Get camera by ID"""
@@ -153,6 +261,98 @@ def get_camera(camera_id):
     if camera:
         return jsonify(dict(camera))
     return jsonify({'error': 'Camera not found'}), 404
+
+@app.route('/api/dvr/<int:dvr_id>/channels', methods=['GET'])
+def get_dvr_channels_by_id(dvr_id):
+    """Get all channels for a specific DVR by ID
+    
+    Returns:
+    {
+        "dvr_id": 1,
+        "dvr_name": "Dahua DVR 1",
+        "dvr_host": "192.168.1.100",
+        "dvr_port": 80,
+        "status": "online",
+        "manufacturer": "Dahua",
+        "model": "HCVR5108HE-S3",
+        "serial_number": "123456",
+        "channels": [
+            {
+                "channel_id": 1,
+                "channel_name": "Camera 1",
+                "status": 1,
+                "rtsp_feed": "rtsp://192.168.1.100:554/cam/realmonitor?channel=1&subtype=0",
+                "iframe": "http://localhost:8821/embed/streams/1",
+                "stream_id": 1,
+                "profile_token": "Profile000",
+                "codec": "H.264",
+                "resolution": "1920x1080",
+                "framerate": 25,
+                "bitrate": 2048
+            }
+        ]
+    }
+    """
+    conn = get_db_connection()
+    
+    try:
+        camera = conn.execute('SELECT * FROM cameras WHERE id = ?', (dvr_id,)).fetchone()
+        if not camera:
+            conn.close()
+            return jsonify({'error': 'DVR not found'}), 404
+        
+        # Get streams/channels for this camera
+        streams = conn.execute('''
+            SELECT * FROM video_streams 
+            WHERE camera_id = ?
+            ORDER BY channel_number, stream_variant
+        ''', (dvr_id,)).fetchall()
+        
+        # Build channels list
+        channels = []
+        for stream in streams:
+            # Determine status (1 = online, 0 = offline based on camera status)
+            stream_status = 1 if camera['status'] == 'online' else 0
+            
+            # Build iframe URL - using the embed endpoint
+            iframe_url = f"https://{request.host}/embed/streams/{stream['id']}"
+            if request.scheme == 'http':
+                iframe_url = f"http://{request.host}/embed/streams/{stream['id']}"
+            
+            channel = {
+                'channel_id': stream['channel_number'] or stream['id'],
+                'channel_name': stream['stream_label'] or stream['stream_variant'] or f"Stream {stream['id']}",
+                'status': stream_status,
+                'rtsp_feed': stream['stream_uri'],
+                'iframe': iframe_url,
+                'stream_id': stream['id'],
+                'profile_token': stream['profile_token'],
+                'codec': stream['codec'],
+                'resolution': stream['resolution'],
+                'framerate': stream['framerate'],
+                'bitrate': stream['bitrate']
+            }
+            channels.append(channel)
+        
+        # Build DVR entry
+        dvr_entry = {
+            'dvr_id': camera['id'],
+            'dvr_name': camera['name'],
+            'dvr_host': camera['host'],
+            'dvr_port': camera['port'],
+            'status': camera['status'],
+            'manufacturer': camera['manufacturer'],
+            'model': camera['model'],
+            'serial_number': camera['serial_number'],
+            'channels': channels
+        }
+        
+        conn.close()
+        return jsonify(dvr_entry)
+    
+    except Exception as e:
+        conn.close()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/cameras', methods=['POST'])
 def add_camera():
