@@ -302,13 +302,15 @@ class StreamManager:
         """
         cmd = ['ffmpeg']
         
-        # RTSP input settings - optimized for reliability and low latency
+        # RTSP input settings - optimized for reliability and ULTRA LOW latency
         cmd.extend([
             '-rtsp_transport', 'tcp',           # TCP for reliability
             '-rtsp_flags', 'prefer_tcp',        # Prefer TCP
-            '-timeout', '5000000',              # 5 second timeout (microseconds) - FFmpeg 8.x uses -timeout
-            '-fflags', 'nobuffer+flush_packets', # Minimal buffering for low latency
+            '-timeout', '2000000',              # 2 second timeout (reduced for faster startup)
+            '-fflags', 'nobuffer+flush_packets+discardcorrupt', # Minimal buffering, discard corrupt frames
             '-flags', 'low_delay',              # Low delay flag
+            '-analyzeduration', '1000000',      # Analyze only 1 second of input (faster startup)
+            '-probesize', '500000',             # Probe only 500KB (faster startup)
         ])
         
         # Input
@@ -351,13 +353,13 @@ class StreamManager:
         # Fix timestamp issues
         cmd.extend(['-avoid_negative_ts', 'make_zero'])
         
-        # HLS output settings - LOW LATENCY for real-time viewing
-        # Simplified for FFmpeg 8.x compatibility
+        # HLS output settings - ULTRA LOW LATENCY for real-time viewing
+        # Optimized for minimal delay and fast startup
         cmd.extend([
             '-f', 'hls',
-            '-hls_time', '2.0',                 # 2-second segments (more stable)
-            '-hls_list_size', '5',              # Keep 5 segments (10 seconds total)
-            '-hls_flags', 'delete_segments+independent_segments',  # Simplified flags (removed problematic ones)
+            '-hls_time', '1.0',                 # 1-second segments (lower latency)
+            '-hls_list_size', '2',              # Keep only 2 segments (2 seconds total buffer)
+            '-hls_flags', 'delete_segments+independent_segments',  # Simplified flags for compatibility
             '-hls_segment_type', 'mpegts',      # MPEG-TS segments
             '-hls_segment_filename', str(segment_pattern),
             '-start_number', '0',
