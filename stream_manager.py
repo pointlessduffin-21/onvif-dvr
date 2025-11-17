@@ -227,6 +227,10 @@ class StreamManager:
             )
             
             try:
+                # Log the command for debugging (without credentials)
+                safe_cmd = [arg if '@' not in str(arg) else 'rtsp://***:***@...' for arg in cmd]
+                logger.info(f"Starting FFmpeg for {stream_id} with command: {' '.join(safe_cmd[:10])}...")
+                
                 # Start ffmpeg process with optimized settings
                 process = subprocess.Popen(
                     cmd,
@@ -235,6 +239,15 @@ class StreamManager:
                     stdin=subprocess.DEVNULL,    # No stdin needed
                     preexec_fn=os.setsid if hasattr(os, 'setsid') else None  # Create new process group
                 )
+                
+                # Give process a moment to start and check if it's still alive
+                time.sleep(0.5)
+                if process.poll() is not None:
+                    # Process died immediately, get error
+                    stderr_output = process.stderr.read().decode('utf-8', errors='ignore') if process.stderr else 'No stderr available'
+                    logger.error(f"FFmpeg process for {stream_id} died immediately with return code {process.returncode}")
+                    logger.error(f"FFmpeg stderr output: {stderr_output[:500]}")
+                    return False
                 
                 # Store stream info with enhanced metadata
                 relative_playlist = f"static/streams/{stream_id}/stream.m3u8"
@@ -266,7 +279,7 @@ class StreamManager:
                 return True
                 
             except Exception as e:
-                logger.error(f"Failed to start stream {stream_id}: {e}")
+                logger.error(f"Failed to start stream {stream_id}: {e}", exc_info=True)
                 return False
     
     def _build_ffmpeg_command(
@@ -293,7 +306,7 @@ class StreamManager:
         cmd.extend([
             '-rtsp_transport', 'tcp',           # TCP for reliability
             '-rtsp_flags', 'prefer_tcp',        # Prefer TCP
-            '-stimeout', '5000000',             # 5 second timeout (microseconds)
+            '-timeout', '5000000',              # 5 second timeout (microseconds) - FFmpeg 8.x uses -timeout
             '-fflags', 'nobuffer+flush_packets', # Minimal buffering for low latency
             '-flags', 'low_delay',              # Low delay flag
         ])
@@ -331,20 +344,20 @@ class StreamManager:
         else:
             # Copy mode - simpler and faster
             cmd.extend(['-c:v', 'copy'])  # Copy video
-            # Audio: try to copy first, if not compatible encode to AAC
-            # Use -c:a copy first, then fallback to aac if needed (FFmpeg handles this)
-            cmd.extend(['-c:a', 'aac', '-b:a', '64k', '-ar', '44100', '-ac', '2'])  # Encode audio to AAC
+            # Audio: HLS requires AAC, so we need to encode
+            # Handle PCM_ALAW and other audio formats properly
+            cmd.extend(['-c:a', 'aac', '-b:a', '64k', '-ar', '8000', '-ac', '1'])  # Match source audio properties
         
         # Fix timestamp issues
         cmd.extend(['-avoid_negative_ts', 'make_zero'])
         
         # HLS output settings - LOW LATENCY for real-time viewing
-        # Simplified for FFmpeg 7.x compatibility
+        # Simplified for FFmpeg 8.x compatibility
         cmd.extend([
             '-f', 'hls',
             '-hls_time', '2.0',                 # 2-second segments (more stable)
             '-hls_list_size', '5',              # Keep 5 segments (10 seconds total)
-            '-hls_flags', 'delete_segments+independent_segments+program_date_time+omit_endlist',  # Simplified flags
+            '-hls_flags', 'delete_segments+independent_segments',  # Simplified flags (removed problematic ones)
             '-hls_segment_type', 'mpegts',      # MPEG-TS segments
             '-hls_segment_filename', str(segment_pattern),
             '-start_number', '0',
