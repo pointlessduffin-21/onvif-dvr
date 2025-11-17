@@ -448,6 +448,102 @@ class ONVIFManager:
             raise e
         finally:
             conn.close()
+    
+    def save_camera_to_db_vendor(self, camera_data, device_info, profiles, streams, connection_method):
+        """Save camera configuration to database from vendor-specific provider"""
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Insert camera
+            cursor.execute('''
+                INSERT INTO cameras (name, host, port, username, password, manufacturer, 
+                                    model, firmware_version, serial_number, profiles_supported, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                camera_data['name'],
+                camera_data['host'],
+                camera_data['port'],
+                camera_data['username'],
+                camera_data['password'],
+                device_info.get('manufacturer', ''),
+                device_info.get('model', ''),
+                device_info.get('firmware_version', ''),
+                device_info.get('serial_number', ''),
+                json.dumps(profiles),
+                'online'
+            ))
+            
+            camera_id = cursor.lastrowid
+            
+            # Save profiles
+            for profile in profiles:
+                cursor.execute('''
+                    INSERT INTO camera_profiles (camera_id, profile_token, profile_name, profile_type,
+                                                video_encoder_config, video_source_config)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    camera_id,
+                    profile.get('token', ''),
+                    profile.get('name', ''),
+                    profile.get('profile_type', ''),
+                    json.dumps(profile.get('video_encoder', {})),
+                    json.dumps(profile.get('video_source', {}))
+                ))
+            
+            # Save streams
+            for stream in streams:
+                channel_number = None
+                if 'channel' in stream:
+                    try:
+                        channel_number = int(stream['channel'])
+                    except:
+                        pass
+                
+                # Determine stream variant from name or profile token
+                stream_variant = None
+                stream_label = stream.get('name', '')
+                
+                if 'main' in stream_label.lower() or 'main' in stream.get('profile_token', '').lower():
+                    stream_variant = 'Main Stream'
+                elif 'sub' in stream_label.lower() or 'sub' in stream.get('profile_token', '').lower():
+                    stream_variant = 'Sub Stream'
+                
+                # Build proper stream label
+                if channel_number:
+                    if stream_variant:
+                        stream_label = f"Channel {channel_number} - {stream_variant}"
+                    else:
+                        stream_label = f"Channel {channel_number}"
+                elif stream_variant:
+                    stream_label = stream_variant
+                else:
+                    stream_label = stream.get('name', stream.get('profile_token', 'Stream'))
+                
+                cursor.execute('''
+                    INSERT INTO video_streams (camera_id, profile_token, stream_uri, stream_type,
+                                             protocol, codec, resolution, channel_number, stream_label, stream_variant)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    camera_id,
+                    stream.get('profile_token', ''),
+                    stream.get('stream_uri', ''),
+                    stream.get('stream_type', 'RTP-Unicast'),
+                    stream.get('protocol', 'RTSP'),
+                    stream.get('codec', ''),
+                    json.dumps(stream.get('resolution', {})),
+                    channel_number,
+                    stream_label,
+                    stream_variant or stream.get('name', '')
+                ))
+            
+            conn.commit()
+            return camera_id
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
 
     def refresh_camera_profiles(self, camera_row):
         """Refresh profiles and stream information for an existing camera"""

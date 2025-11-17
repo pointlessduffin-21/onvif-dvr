@@ -72,10 +72,13 @@ chmod +x setup.sh
 
 ## 📖 Documentation
 
-- **[USAGE.md](USAGE.md)** - Comprehensive user guide with examples
-- **[PROFILES.md](PROFILES.md)** - Detailed ONVIF profile implementation
-- **[TESTING.md](TESTING.md)** - Testing guide and checklist
-- **[PROJECT_SUMMARY.md](PROJECT_SUMMARY.md)** - Complete project overview
+- **[docs/guides/USAGE.md](docs/guides/USAGE.md)** - Comprehensive user guide with examples
+- **[docs/reference/PROFILES.md](docs/reference/PROFILES.md)** - Detailed ONVIF profile implementation
+- **[docs/reference/TESTING.md](docs/reference/TESTING.md)** - Testing guide and checklist
+- **[docs/overview/PROJECT_SUMMARY.md](docs/overview/PROJECT_SUMMARY.md)** - Complete project overview
+- **[docs/overview/ARCHITECTURE.md](docs/overview/ARCHITECTURE.md)** - System architecture
+- **[docs/guides/STREAMING_GUIDE.md](docs/guides/STREAMING_GUIDE.md)** - Streaming setup guide
+- **[docs/DIRECTORY_STRUCTURE.md](docs/DIRECTORY_STRUCTURE.md)** - Project directory structure
 
 ## 🏗️ Project Structure
 
@@ -173,7 +176,7 @@ DATABASE_PATH=onvif_viewer.db
 - `GET /api/events` - List events
 - `GET /api/cameras/<id>/analytics` - Get analytics
 
-See **[USAGE.md](USAGE.md)** for complete API documentation.
+See **[docs/guides/USAGE.md](docs/guides/USAGE.md)** for complete API documentation.
 
 ## 🛠️ Technology Stack
 
@@ -239,7 +242,7 @@ rm onvif_viewer.db
 python init_db.py
 ```
 
-See **[TESTING.md](TESTING.md)** for comprehensive troubleshooting.
+See **[docs/reference/TESTING.md](docs/reference/TESTING.md)** for comprehensive troubleshooting.
 
 ## 📚 Additional Resources
 
@@ -265,10 +268,11 @@ MIT License - See LICENSE file for details
 ## 📞 Support
 
 For detailed help:
-1. Check **[USAGE.md](USAGE.md)** for usage instructions
-2. Review **[TESTING.md](TESTING.md)** for testing guidance
-3. See **[PROFILES.md](PROFILES.md)** for profile details
+1. Check **[docs/guides/USAGE.md](docs/guides/USAGE.md)** for usage instructions
+2. Review **[docs/reference/TESTING.md](docs/reference/TESTING.md)** for testing guidance
+3. See **[docs/reference/PROFILES.md](docs/reference/PROFILES.md)** for profile details
 4. Check application logs for errors
+5. See **[docs/DIRECTORY_STRUCTURE.md](docs/DIRECTORY_STRUCTURE.md)** for project organization
 
 ---
 

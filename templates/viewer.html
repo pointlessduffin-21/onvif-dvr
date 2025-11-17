@@ -355,10 +355,36 @@ function startStream() {
             updateStreamStatus(`Waiting for ${label} to initialize...`);
         }
 
-        const delay = response.already_running ? 500 : 2000;
-        setTimeout(() => {
+        // Poll for playlist availability instead of fixed delay for faster startup
+        if (response.already_running) {
+            // Stream already running, start immediately
             initHLSPlayer(playlistUrl);
-        }, delay);
+        } else {
+            // Poll for playlist file to be created (check every 200ms, max 3 seconds)
+            let pollCount = 0;
+            const maxPolls = 15; // 15 * 200ms = 3 seconds max wait
+            const pollInterval = setInterval(() => {
+                pollCount++;
+                fetch(playlistUrl, { method: 'HEAD', cache: 'no-cache' })
+                    .then(response => {
+                        if (response.ok) {
+                            clearInterval(pollInterval);
+                            initHLSPlayer(playlistUrl);
+                        } else if (pollCount >= maxPolls) {
+                            clearInterval(pollInterval);
+                            // Timeout - try anyway, might work
+                            initHLSPlayer(playlistUrl);
+                        }
+                    })
+                    .catch(() => {
+                        if (pollCount >= maxPolls) {
+                            clearInterval(pollInterval);
+                            // Timeout - try anyway
+                            initHLSPlayer(playlistUrl);
+                        }
+                    });
+            }, 200); // Check every 200ms
+        }
 
         $('#stopBtn').prop('disabled', false);
     }).fail(function(xhr) {
@@ -385,17 +411,81 @@ function initHLSPlayer(playlistUrl) {
             debug: false,
             enableWorker: true,
             lowLatencyMode: true,
-            backBufferLength: 90
+            // ULTRA LOW LATENCY - Real-time viewing optimized
+            maxBufferLength: 1,         // Only 1 second buffer (minimal delay)
+            maxMaxBufferLength: 1.5,    // Absolute max 1.5 seconds
+            backBufferLength: 0.2,      // Minimal back buffer (0.2 seconds)
+            maxBufferSize: 2 * 1000 * 1000,  // 2MB max buffer (ultra low memory)
+            maxBufferHole: 0.2,         // Allow very small gaps
+            highBufferWatchdogPeriod: 0.5, // Check buffer every 0.5s (very aggressive)
+            nudgeOffset: 0.05,         // Very small nudge for sync
+            nudgeMaxRetry: 1,           // Minimal retries (faster recovery)
+            maxFragLoadingTimeOut: 1,   // 1s timeout for segments (faster failover)
+            fragLoadingTimeOut: 0.5,    // 0.5s timeout per fragment (ultra fast)
+            manifestLoadingTimeOut: 0.5,  // 0.5s for manifest (very fast updates)
+            levelLoadingTimeOut: 0.5,     // 0.5s for level
+            // Real-time optimizations
+            capLevelToPlayerSize: true,  // Don't exceed player size
+            autoStartLoad: true,         // Start loading immediately
+            startPosition: -1,           // Start from live edge
+            liveSyncDurationCount: 0.5,    // Sync to 0.5 segments behind live (minimal delay)
+            liveMaxLatencyDurationCount: 1, // Max 1 segment behind (1 second max)
+            liveDurationInfinity: true,   // Live stream mode
+            liveBackBufferLength: 0.2,    // Minimal live back buffer (0.2 seconds)
+            // Aggressive real-time settings
+            maxLiveSyncPlaybackRate: 1.5, // Allow slight speedup to catch up
+            maxLiveSyncPlaybackRateOffset: 0.5, // Speedup offset
+            // Network optimizations for real-time
+            xhrSetup: function(xhr, url) {
+                xhr.withCredentials = false;
+                xhr.timeout = 800;       // 0.8s timeout (ultra fast)
+            },
+            // Playlist refresh for real-time updates
+            manifestLoadingMaxRetry: 2,
+            manifestLoadingRetryDelay: 500,  // 500ms retry delay
+            levelLoadingMaxRetry: 2,
+            levelLoadingRetryDelay: 500,
+            fragLoadingMaxRetry: 2,
+            fragLoadingRetryDelay: 500
         });
         
         hls.loadSource(playlistUrl);
         hls.attachMedia(video);
         
+        // Force immediate playback for real-time viewing
+        video.addEventListener('loadedmetadata', function() {
+            // Seek to live edge immediately
+            if (video.seekable.length > 0) {
+                video.currentTime = video.seekable.end(video.seekable.length - 1);
+            }
+        }, { once: true });
+        
         hls.on(Hls.Events.MANIFEST_PARSED, function() {
-            video.play();
+            // Start playing immediately without waiting for buffer
+            video.play().catch(function(e) {
+                console.log('Auto-play prevented, user interaction required');
+            });
+            
+            // Continuously seek to live edge for real-time viewing
+            const liveSyncInterval = setInterval(function() {
+                if (video.seekable.length > 0) {
+                    const liveEdge = video.seekable.end(video.seekable.length - 1);
+                    const currentTime = video.currentTime;
+                    const delay = liveEdge - currentTime;
+                    
+                    // If more than 0.5 seconds behind, jump to live edge
+                    if (delay > 0.5) {
+                        video.currentTime = liveEdge;
+                    }
+                }
+            }, 200); // Check every 200ms (more frequent sync)
+            
+            // Store interval for cleanup
+            hls.liveSyncInterval = liveSyncInterval;
+            
             $('#loadingOverlay').hide();
             $('#playBtn').prop('disabled', false);
-            updateStreamStatus('Playing...');
+            updateStreamStatus('Playing live...');
         });
         
         hls.on(Hls.Events.ERROR, function(event, data) {
@@ -446,6 +536,11 @@ function stopStream(preserveSelection = false) {
     player.pause();
 
     if (hls) {
+        // Clear live sync interval if exists
+        if (hls.liveSyncInterval) {
+            clearInterval(hls.liveSyncInterval);
+            hls.liveSyncInterval = null;
+        }
         hls.destroy();
         hls = null;
     }

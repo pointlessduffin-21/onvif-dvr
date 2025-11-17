@@ -55,7 +55,18 @@
                 <h5 class="modal-title">Add ONVIF DVR</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body">
+            <div class="modal-body position-relative">
+                <!-- Loading Overlay -->
+                <div id="addCameraLoadingOverlay" class="position-absolute top-0 start-0 w-100 h-100 d-none align-items-center justify-content-center" style="background: rgba(255, 255, 255, 0.9); z-index: 1050; border-radius: 0.375rem;">
+                    <div class="text-center">
+                        <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem;">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <div class="fw-bold">Connecting to DVR...</div>
+                        <div class="text-muted small mt-2">This may take a few seconds</div>
+                    </div>
+                </div>
+                
                 <form id="addCameraForm">
                     <div class="mb-3">
                         <label for="cameraName" class="form-label">DVR Name</label>
@@ -87,8 +98,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn btn-primary" onclick="addCamera()">
+                <button type="button" class="btn btn-secondary" id="addCameraCancelBtn" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" id="addCameraSubmitBtn" onclick="addCamera()">
                     <i class="bi bi-plus-circle"></i> Add DVR
                 </button>
             </div>
@@ -162,6 +173,26 @@ $(document).ready(function() {
     $('#addCameraModal, #editCameraModal').on('hidden.bs.modal', function() {
         $('body').removeClass('modal-open');
         $('.modal-backdrop').remove();
+        
+        // Reset forms when modal is closed
+        $('#addCameraForm')[0].reset();
+        $('#editCameraForm')[0].reset();
+        
+        // Reset loading state for add camera modal
+        const loadingOverlay = $('#addCameraLoadingOverlay');
+        const submitBtn = $('#addCameraSubmitBtn');
+        const cancelBtn = $('#addCameraCancelBtn');
+        const formInputs = $('#addCameraForm input, #addCameraForm button');
+        
+        if (loadingOverlay.length) {
+            loadingOverlay.addClass('d-none').removeClass('d-flex');
+            submitBtn.prop('disabled', false);
+            cancelBtn.prop('disabled', false);
+            formInputs.prop('disabled', false);
+            
+            // Remove any error alerts
+            $('#addCameraForm').next('.alert').remove();
+        }
     });
 });
 
@@ -280,6 +311,13 @@ function refreshCameras() {
 }
 
 function addCamera() {
+    // Validate form
+    const form = document.getElementById('addCameraForm');
+    if (!form.checkValidity()) {
+        form.reportValidity();
+        return;
+    }
+    
     const data = {
         name: $('#cameraName').val(),
         host: $('#cameraHost').val(),
@@ -288,20 +326,99 @@ function addCamera() {
         password: $('#cameraPassword').val()
     };
     
+    // Show loading overlay
+    const loadingOverlay = $('#addCameraLoadingOverlay');
+    const submitBtn = $('#addCameraSubmitBtn');
+    const cancelBtn = $('#addCameraCancelBtn');
+    const formInputs = $('#addCameraForm input, #addCameraForm button');
+    
+    loadingOverlay.removeClass('d-none').addClass('d-flex');
+    submitBtn.prop('disabled', true);
+    cancelBtn.prop('disabled', true);
+    formInputs.prop('disabled', true);
+    
+    // Update loading message
+    const loadingText = loadingOverlay.find('.fw-bold');
+    const loadingSubtext = loadingOverlay.find('.text-muted');
+    
+    // Start connection attempt
+    loadingText.text('Connecting to DVR...');
+    loadingSubtext.text('Trying vendor-specific connection methods...');
+    
     $.ajax({
         url: '/api/cameras',
         method: 'POST',
         contentType: 'application/json',
         data: JSON.stringify(data),
+        timeout: 30000, // 30 second timeout
         success: function(response) {
-            $('#addCameraModal').modal('hide');
-            $('#addCameraForm')[0].reset();
-            loadCameras();
-            alert('DVR added successfully!');
+            loadingText.text('Success!');
+            loadingSubtext.text('Saving DVR configuration...');
+            
+            // Small delay to show success message
+            setTimeout(function() {
+                $('#addCameraModal').modal('hide');
+                $('#addCameraForm')[0].reset();
+                loadCameras();
+                
+                // Show success notification
+                const alertDiv = $('<div class="alert alert-success alert-dismissible fade show" role="alert">' +
+                    '<strong>Success!</strong> DVR "' + data.name + '" has been added successfully.' +
+                    '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>' +
+                    '</div>');
+                $('.container-fluid').first().prepend(alertDiv);
+                
+                // Auto-dismiss after 5 seconds
+                setTimeout(function() {
+                    alertDiv.alert('close');
+                }, 5000);
+            }, 500);
         },
         error: function(xhr) {
-            const error = xhr.responseJSON ? xhr.responseJSON.error : 'Failed to add camera';
-            alert('Error: ' + error);
+            let errorMsg = 'Failed to add DVR';
+            let errorDetails = '';
+            
+            if (xhr.responseJSON) {
+                errorMsg = xhr.responseJSON.error || errorMsg;
+                errorDetails = xhr.responseJSON.details || '';
+            } else if (xhr.status === 0) {
+                errorMsg = 'Connection timeout or network error';
+                errorDetails = 'Please check your network connection and try again.';
+            } else if (xhr.status === 400) {
+                errorMsg = 'Invalid request';
+                errorDetails = 'Please check all fields are filled correctly.';
+            } else if (xhr.status === 500) {
+                errorMsg = 'Server error';
+                errorDetails = 'An error occurred on the server. Please try again.';
+            }
+            
+            // Hide loading overlay
+            loadingOverlay.addClass('d-none').removeClass('d-flex');
+            submitBtn.prop('disabled', false);
+            cancelBtn.prop('disabled', false);
+            formInputs.prop('disabled', false);
+            
+            // Show error alert
+            const errorAlert = $('<div class="alert alert-danger alert-dismissible fade show mt-3" role="alert">' +
+                '<strong>Error:</strong> ' + errorMsg +
+                (errorDetails ? '<br><small>' + errorDetails + '</small>' : '') +
+                '<button type="button" class="btn-close" data-bs-dismiss="alert"></button>' +
+                '</div>');
+            $('#addCameraForm').after(errorAlert);
+            
+            // Auto-dismiss after 10 seconds
+            setTimeout(function() {
+                errorAlert.alert('close');
+            }, 10000);
+        },
+        beforeSend: function() {
+            // Update status messages during connection
+            setTimeout(function() {
+                if (loadingOverlay.hasClass('d-flex')) {
+                    loadingText.text('Connecting to DVR...');
+                    loadingSubtext.text('Attempting ONVIF connection...');
+                }
+            }, 2000);
         }
     });
 }

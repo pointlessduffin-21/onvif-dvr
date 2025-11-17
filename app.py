@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import os
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from database import get_db_connection, init_db
 from onvif_manager import ONVIFManager
@@ -33,13 +34,20 @@ from threading import Thread, Event
 cleanup_event = Event()
 
 def periodic_cleanup():
-    """Background thread to cleanup dead streams periodically"""
+    """Background thread to cleanup dead streams and old segments periodically"""
     while not cleanup_event.is_set():
-        cleanup_event.wait(300)  # Check every 5 minutes
+        cleanup_event.wait(60)  # Check every 1 minute (more frequent)
         if not cleanup_event.is_set():
+            # Cleanup dead streams
             count = stream_manager.cleanup_dead_streams()
             if count > 0:
                 logger.info(f"Periodic cleanup: removed {count} dead stream(s)")
+            
+            # Cleanup old segments (every 5 minutes)
+            if int(time.time()) % 300 < 60:  # Once every 5 minutes
+                segment_count = stream_manager.cleanup_old_segments(max_age_minutes=5)
+                if segment_count > 0:
+                    logger.info(f"Periodic cleanup: removed {segment_count} old segment(s)")
 
 # Start cleanup thread
 cleanup_thread = Thread(target=periodic_cleanup, daemon=True)
@@ -48,7 +56,7 @@ cleanup_thread.start()
 def shutdown_cleanup():
     """Cleanup on shutdown"""
     cleanup_event.set()
-    stream_manager.stop_all_streams()
+    stream_manager.shutdown()
 
 atexit.register(shutdown_cleanup)
 
@@ -356,38 +364,129 @@ def get_dvr_channels_by_id(dvr_id):
 
 @app.route('/api/cameras', methods=['POST'])
 def add_camera():
-    """Add new camera"""
+    """Add new camera - tries vendor-specific providers first, then ONVIF"""
     data = request.json
     
-    # Connect to camera
-    result = onvif_manager.connect_camera(
-        data['host'],
-        data.get('port', 80),
-        data['username'],
-        data['password']
-    )
+    host = data['host']
+    port = data.get('port', 80)
+    username = data['username']
+    password = data['password']
+    name = data.get('name', host)
     
-    if not result['success']:
-        return jsonify({'error': result['error']}), 400
+    result = None
+    connection_method = None
     
-    # Save to database
+    # Try vendor-specific providers first (Dahua, Hikvision, etc.)
+    # Check if name suggests a vendor, or try common vendors
+    name_lower = name.lower()
+    providers_to_try = []
+    
+    # Determine which providers to try based on name
+    if 'dahua' in name_lower:
+        providers_to_try = ['dahua', 'hikvision', 'axis']
+    elif 'hikvision' in name_lower or 'hik' in name_lower:
+        providers_to_try = ['hikvision', 'dahua', 'axis']
+    elif 'axis' in name_lower:
+        providers_to_try = ['axis', 'dahua', 'hikvision']
+    else:
+        # Try common providers in order (Dahua is most common)
+        providers_to_try = ['dahua', 'hikvision', 'axis']
+    
+    # Try vendor-specific providers
+    from camera_providers import get_camera_provider
+    for provider_key in providers_to_try:
+        try:
+            provider = get_camera_provider(provider_key)
+            if provider:
+                logger.info(f"Trying {provider_key} provider for {host}:{port}")
+                result = provider.connect(host, port, username, password)
+                if result.get('success'):
+                    connection_method = provider_key
+                    logger.info(f"Successfully connected using {provider_key} provider")
+                    break
+                else:
+                    logger.debug(f"{provider_key} provider failed: {result.get('error', 'Unknown error')}")
+        except Exception as e:
+            logger.debug(f"Vendor provider {provider_key} exception: {e}")
+            continue
+    
+    # If vendor provider failed, try ONVIF
+    if not result or not result.get('success'):
+        logger.info(f"Trying ONVIF connection for {host}:{port}")
+        try:
+            result = onvif_manager.connect_camera(host, port, username, password)
+            if result.get('success'):
+                connection_method = 'onvif'
+                logger.info(f"Successfully connected using ONVIF")
+        except Exception as e:
+            logger.warning(f"ONVIF connection exception: {e}")
+            if not result:
+                result = {'success': False, 'error': str(e)}
+    
+    # If both failed, return error
+    if not result or not result.get('success'):
+        error_msg = result.get('error', 'Unknown connection error') if result else 'Connection failed'
+        logger.error(f"Failed to connect to {host}: {error_msg}")
+        return jsonify({
+            'error': f'Failed to connect to device: {error_msg}',
+            'details': 'Tried vendor-specific provider and ONVIF. Please verify: IP address, port, username, password, and that ONVIF is enabled on the device.'
+        }), 400
+    
+    # Handle vendor provider result format
+    if connection_method and connection_method != 'onvif':
+        # Convert vendor provider result to ONVIF-like format
+        device_info = result.get('device_info', {})
+        profiles = result.get('profiles', [])
+        streams = result.get('streams', [])
+        
+        # Save to database with vendor-specific data
+        try:
+            camera_id = onvif_manager.save_camera_to_db_vendor(
+                {
+                    'name': name,
+                    'host': host,
+                    'port': port,
+                    'username': username,
+                    'password': password
+                },
+                device_info,
+                profiles,
+                streams,
+                connection_method
+            )
+            
+            return jsonify({
+                'success': True,
+                'camera_id': camera_id,
+                'connection_method': connection_method
+            })
+        except Exception as e:
+            logger.error(f"Error saving camera to database: {e}")
+            return jsonify({'error': f'Failed to save camera: {str(e)}'}), 500
+    
+    # Handle ONVIF result (original flow)
     try:
         camera_id = onvif_manager.save_camera_to_db(
             {
-                'name': data['name'],
-                'host': data['host'],
-                'port': data.get('port', 80),
-                'username': data['username'],
-                'password': data['password']
+                'name': name,
+                'host': host,
+                'port': port,
+                'username': username,
+                'password': password
             },
             result['device_info'],
             result['profiles'],
-            camera_object=result['camera']
+            camera_object=result.get('camera')
         )
         
-        return jsonify({'success': True, 'camera_id': camera_id})
+        return jsonify({
+            'success': True,
+            'camera_id': camera_id,
+            'connection_method': 'onvif'
+        })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error saving camera to database: {e}")
+        return jsonify({'error': f'Failed to save camera: {str(e)}'}), 500
 
 @app.route('/api/cameras/<int:camera_id>', methods=['PUT'])
 def update_camera(camera_id):
@@ -486,12 +585,27 @@ def get_streams(camera_id):
     """Get video streams for camera"""
     conn = get_db_connection()
     streams = conn.execute(
-        'SELECT * FROM video_streams WHERE camera_id = ?',
+        'SELECT * FROM video_streams WHERE camera_id = ? ORDER BY channel_number, stream_variant, id',
         (camera_id,)
     ).fetchall()
     conn.close()
     
-    return jsonify([dict(stream) for stream in streams])
+    # Return streams with proper ordering
+    stream_list = []
+    for stream in streams:
+        stream_dict = dict(stream)
+        # Ensure stream_label is set properly
+        if not stream_dict.get('stream_label'):
+            if stream_dict.get('stream_variant'):
+                channel = f"Channel {stream_dict.get('channel_number', '?')}" if stream_dict.get('channel_number') else 'Stream'
+                stream_dict['stream_label'] = f"{channel} - {stream_dict['stream_variant']}"
+            elif stream_dict.get('channel_number'):
+                stream_dict['stream_label'] = f"Channel {stream_dict['channel_number']}"
+            else:
+                stream_dict['stream_label'] = stream_dict.get('profile_token', 'Stream')
+        stream_list.append(stream_dict)
+    
+    return jsonify(stream_list)
 
 @app.route('/api/streams/overview', methods=['GET'])
 def get_stream_overview():
@@ -922,12 +1036,18 @@ def start_stream():
             'uptime': existing_stream['uptime']
         })
     
-    # Start the stream
+    # Get quality settings from request (optional)
+    quality = data.get('quality', 'auto')  # 'low', 'medium', 'high', 'auto'
+    max_bitrate = data.get('max_bitrate')  # Optional max bitrate in kbps
+    
+    # Start the optimized stream
     success = stream_manager.start_stream(
         stream_id=stream_id,
         rtsp_uri=stream['stream_uri'],
         username=camera['username'],
-        password=camera['password']
+        password=camera['password'],
+        quality=quality,
+        max_bitrate=max_bitrate
     )
     
     if success:
@@ -986,8 +1106,20 @@ def cleanup_streams():
 # Serve HLS playlist and segments
 @app.route('/static/streams/<path:filename>')
 def serve_stream(filename):
-    """Serve HLS playlists and segments"""
-    return send_from_directory('static/streams', filename)
+    """Serve HLS playlists and segments with no-cache headers for real-time viewing"""
+    response = send_from_directory('static/streams', filename)
+    
+    # Add no-cache headers for real-time updates
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    
+    # For playlists, add CORS and content-type
+    if filename.endswith('.m3u8'):
+        response.headers['Content-Type'] = 'application/vnd.apple.mpegurl'
+        response.headers['Access-Control-Allow-Origin'] = '*'
+    
+    return response
 
 # ============================================================================
 # Error Handlers
